@@ -24,6 +24,8 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
+
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/api"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/utils"
@@ -402,6 +404,16 @@ func (csr *ClusterStateRegistry) IsClusterHealthy() bool {
 
 	totalUnready := len(csr.totalReadiness.Unready)
 
+	// Deallocate mode specific check
+	// Do not consider deallocated nodes in the cluster health check
+	// Those nodes will always exist in NotReady state
+	totalUnready = csr.calcDeallocationNodes(totalUnready, csr.totalReadiness.Unready)
+	// This shouldn't happen but if it doesn assume healthy
+	if totalUnready < 0 {
+		klog.Warningf("Delta is negative - assuming cluster is healthy")
+		return true
+	}
+
 	if totalUnready > csr.config.OkTotalUnreadyCount &&
 		float64(totalUnready) > csr.config.MaxTotalUnreadyPercentage/100.0*float64(len(csr.nodes)) {
 		return false
@@ -467,7 +479,7 @@ func (csr *ClusterStateRegistry) BackoffStatusForNodeGroup(nodeGroup cloudprovid
 
 // NodeGroupScaleUpSafety returns information about node group safety to be scaled up now.
 func (csr *ClusterStateRegistry) NodeGroupScaleUpSafety(nodeGroup cloudprovider.NodeGroup, now time.Time) NodeGroupScalingSafety {
-	isHealthy := csr.IsNodeGroupHealthy(nodeGroup.Id())
+	isHealthy := csr.IsNodeGroupHealthy(nodeGroup.Id()) || csr.IsNodeGroupHealthyDeallocate(nodeGroup)
 	backoffStatus := csr.backoff.BackoffStatus(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], now)
 	return NodeGroupScalingSafety{SafeToScale: isHealthy && !backoffStatus.IsBackedOff, Healthy: isHealthy, BackoffStatus: backoffStatus}
 }
@@ -591,6 +603,8 @@ type Readiness struct {
 	LongUnregistered []string
 	// Names of nodes that haven't yet registered.
 	Unregistered []string
+	// Number of deallocated nodes that exist in K8s
+	Deallocated []string
 	// Time when the readiness was measured.
 	Time time.Time
 	// Names of nodes that are Unready due to missing resources.
@@ -603,10 +617,17 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 	perNodeGroup := make(map[string]Readiness)
 	total := Readiness{Time: currentTime}
 
-	update := func(current Readiness, node *apiv1.Node, nr kube_util.NodeReadiness) Readiness {
+	update := func(current Readiness, node *apiv1.Node, nr kube_util.NodeReadiness, nodeGroup cloudprovider.NodeGroup) Readiness {
+		// TODO: (deallocate) Could not isolate deallocate mode logic effectively for this function.
+		policyNg, ok := nodeGroup.(deallocate.PolicyNodeGroup)
 		current.Registered = append(current.Registered, node.Name)
 		if _, isDeleted := csr.deletedNodes[node.Name]; isDeleted {
 			current.Deleted = append(current.Deleted, node.Name)
+			// Also use unreachable to account for delays in applying shutdown taint
+		} else if (nodeGroup != nil && ok && policyNg.ScaleDownPolicy() == deallocate.Deallocate) && (taints.HasShutdownTaint(node) || taints.HasUnreachableTaint(node)) {
+			// TODO: When removing Deallocate mode, remove this if-nest.
+			current.Deallocated = append(current.Deallocated, node.Name)
+			current.Unready = append(current.Unready, node.Name)
 		} else if nr.Ready {
 			current.Ready = append(current.Ready, node.Name)
 		} else if node.CreationTimestamp.Time.Add(MaxNodeStartupTime).After(currentTime) {
@@ -633,9 +654,9 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 				klog.Warningf("Failed to get readiness info for %s: %v", node.Name, errReady)
 			}
 		} else {
-			perNodeGroup[nodeGroup.Id()] = update(perNodeGroup[nodeGroup.Id()], node, nr)
+			perNodeGroup[nodeGroup.Id()] = update(perNodeGroup[nodeGroup.Id()], node, nr, nodeGroup)
 		}
-		total = update(total, node, nr)
+		total = update(total, node, nr, nodeGroup)
 	}
 
 	for _, unregistered := range csr.unregisteredNodes {
@@ -725,6 +746,30 @@ func (csr *ClusterStateRegistry) updateUnregisteredNodes(unregisteredNodes []Unr
 	csr.unregisteredNodes = result
 }
 
+// RemoveUnregisteredNodesFromList removes given nodes from the list of unregistered nodes
+func (csr *ClusterStateRegistry) RemoveUnregisteredNodesFromList(unregisteredNodesToRemove []UnregisteredNode) {
+	for _, node := range unregisteredNodesToRemove {
+		csr.RemoveUnregisteredNodeFromList(node)
+	}
+}
+
+// RemoveUnregisteredNodeFromList removes a given unregistered node from the list of unregistered nodes
+func (csr *ClusterStateRegistry) RemoveUnregisteredNodeFromList(unregisteredNodeToRemove UnregisteredNode) {
+	csr.Lock()
+	defer csr.Unlock()
+	result := make(map[string]UnregisteredNode)
+	for _, unregistered := range csr.unregisteredNodes {
+		if unregistered.Node.Name == unregisteredNodeToRemove.Node.Name {
+			klog.V(5).Infof("Removing unregistered node %s from the cluster state registry", unregistered.Node.Name)
+			continue
+		} else {
+			klog.V(5).Infof("Adding unregistered node %s to the cluster state registry", unregistered.Node.Name)
+			result[unregistered.Node.Name] = unregistered
+		}
+	}
+	csr.unregisteredNodes = result
+}
+
 // GetUnregisteredNodes returns a list of all unregistered nodes.
 func (csr *ClusterStateRegistry) GetUnregisteredNodes() []UnregisteredNode {
 	csr.Lock()
@@ -784,7 +829,7 @@ func (csr *ClusterStateRegistry) GetStatus(now time.Time) *api.ClusterAutoscaler
 
 		// Health.
 		nodeGroupStatus.Health = buildHealthStatusNodeGroup(
-			csr.IsNodeGroupHealthy(nodeGroup.Id()), readiness, acceptable, nodeGroup.MinSize(), nodeGroup.MaxSize(), nodeGroupLastStatus.Health)
+			csr.IsNodeGroupHealthy(nodeGroup.Id()) || csr.IsNodeGroupHealthyDeallocate(nodeGroup), readiness, acceptable, nodeGroup.MinSize(), nodeGroup.MaxSize(), nodeGroupLastStatus.Health)
 
 		// Scale up.
 		nodeGroupStatus.ScaleUp = csr.buildScaleUpStatusNodeGroup(
@@ -981,10 +1026,22 @@ func (csr *ClusterStateRegistry) GetUpcomingNodes() (upcomingCounts map[string]i
 	registeredNodeNames = map[string][]string{}
 	for _, nodeGroup := range csr.cloudProvider.NodeGroups() {
 		id := nodeGroup.Id()
+		policyNg, ok := nodeGroup.(deallocate.PolicyNodeGroup)
+
 		readiness := csr.perNodeGroupReadiness[id]
 		ar := csr.acceptableRanges[id]
 		// newNodes is the number of nodes that
 		newNodes := ar.CurrentTarget - (len(readiness.Ready) + len(readiness.Unready) + len(readiness.LongUnregistered))
+
+		// Deallocate-specific calculation
+		if ok && policyNg.ScaleDownPolicy() == deallocate.Deallocate {
+			// newNodes are the upcoming nodes. This is the TargetSize (goal state of the nodegroup) subtracted from (the current ready nodes + (nodes transitioning from deallocated state to running))+ unregistered + still starting nodes)
+			newNodes = ar.CurrentTarget - (len(readiness.Ready) + (len(readiness.Unready) - len(readiness.Deallocated)) + len(readiness.LongUnregistered))
+		}
+
+		klog.V(3).Infof("newNodes: %d, currentTarget: %d, deallocated: %d, readinessReady: %d, readinessUnready: %d, readiness.LongUnregistered: %d for nodeGroup %s", newNodes,
+			ar.CurrentTarget, len(readiness.Deallocated), len(readiness.Ready), len(readiness.Unready), len(readiness.LongUnregistered), id)
+
 		if newNodes <= 0 {
 			// Negative value is unlikely but theoretically possible.
 			continue
@@ -1275,4 +1332,38 @@ func truncateIfExceedMaxLength(s string, maxLength int) string {
 		return s[:maxLength]
 	}
 	return s[:untrancatedLen] + messageTrancated
+}
+
+func (csr *ClusterStateRegistry) calcDeallocationNodes(delta int, totalUnready []string) int {
+	if isAnyNodeGroupInDeallocationMode(csr.cloudProvider.NodeGroups()) {
+		totalDeallocated := csr.totalReadiness.Deallocated
+		delta = len(totalUnready) - len(totalDeallocated)
+		klog.V(5).Infof("Cluster Health Check - totalUnready: %d, totalDeallocated: %d", len(totalUnready), len(totalDeallocated))
+	}
+	return delta
+}
+
+// IsNodeGroupHealthyDeallocate returns true if the node group is in deallocate mode.
+func (csr *ClusterStateRegistry) IsNodeGroupHealthyDeallocate(nodeGroup cloudprovider.NodeGroup) bool {
+	// NodeGroups with deallocated nodes can have a lot of Unready nodes - disable the health check
+	// for those so they can be scaled up
+	policyNg, ok := nodeGroup.(deallocate.PolicyNodeGroup)
+	if ok && policyNg.ScaleDownPolicy() == deallocate.Deallocate {
+		return true
+	}
+	return false
+}
+
+// isAnyNodeGroupInDeallocationMode returns true iff any nodegroup in the list is of Deallocate policy
+func isAnyNodeGroupInDeallocationMode(ngs []cloudprovider.NodeGroup) bool {
+	for _, ng := range ngs {
+		policyNg, ok := ng.(deallocate.PolicyNodeGroup)
+		if !ok {
+			return false
+		}
+		if policyNg.ScaleDownPolicy() == deallocate.Deallocate {
+			return true
+		}
+	}
+	return false
 }

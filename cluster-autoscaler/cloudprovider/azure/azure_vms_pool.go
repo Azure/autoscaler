@@ -48,6 +48,9 @@ type VMPool struct {
 
 	minSize int
 	maxSize int
+
+	labels map[string]string
+	taints string
 }
 
 // NewVMPool creates a new VMPool - a pool of standalone VMs of a single size.
@@ -65,6 +68,8 @@ func NewVMPool(spec *dynamic.NodeGroupSpec, am *AzureManager, agentPoolName stri
 		agentPoolName: agentPoolName,
 		minSize:       spec.MinSize,
 		maxSize:       spec.MaxSize,
+		labels:        spec.Labels,
+		taints:        spec.Taints,
 	}
 	return nodepool, nil
 }
@@ -409,18 +414,16 @@ func (vmPool *VMPool) getVMsFromCache(op skipOption) ([]compute.VirtualMachine, 
 	var filteredVMs []compute.VirtualMachine
 
 	for _, vm := range vmsMap[vmPool.agentPoolName] {
-		if vm.VirtualMachineProperties == nil ||
-			vm.VirtualMachineProperties.HardwareProfile == nil ||
-			!strings.EqualFold(string(vm.HardwareProfile.VMSize), vmPool.sku) {
+		if vm.HardwareProfile == nil || !strings.EqualFold(string(vm.HardwareProfile.VMSize), vmPool.sku) {
 			continue
 		}
 
-		if op.skipDeleting && strings.Contains(to.String(vm.VirtualMachineProperties.ProvisioningState), "Deleting") {
+		if op.skipDeleting && strings.Contains(to.String(vm.ProvisioningState), "Deleting") {
 			klog.V(4).Infof("Skipping VM %s in deleting state", to.String(vm.ID))
 			continue
 		}
-
-		if op.skipFailed && strings.Contains(to.String(vm.VirtualMachineProperties.ProvisioningState), "Failed") {
+		
+		if op.skipFailed && strings.Contains(to.String(vm.ProvisioningState), "Failed") {
 			klog.V(4).Infof("Skipping VM %s in failed state", to.String(vm.ID))
 			continue
 		}
@@ -460,9 +463,7 @@ func (vmPool *VMPool) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 		return nil, err
 	}
 
-	inputLabels := map[string]string{}
-	inputTaints := ""
-	template, err := buildNodeTemplateFromVMPool(ap, vmPool.manager.config.Location, vmPool.sku, inputLabels, inputTaints)
+	template, err := buildNodeTemplateFromVMPool(ap, vmPool.manager.config.Location, vmPool.sku, vmPool.labels, vmPool.taints)
 	if err != nil {
 		return nil, err
 	}

@@ -487,3 +487,13 @@ func getTaintTypeToReport(key string, taintConfig TaintConfig) string {
 	}
 	return unlistedNodeTaintReportedType
 }
+
+// HasShutdownTaint returns true if cloudprovider node shutdown taint is applied on the node.
+func HasShutdownTaint(node *apiv1.Node) bool {
+	return HasTaint(node, cloudproviderapi.TaintNodeShutdown)
+}
+
+// HasUnreachableTaint returns true if unreachable taint is applied on the node.
+func HasUnreachableTaint(node *apiv1.Node) bool {
+	return HasTaint(node, apiv1.TaintNodeUnreachable)
+}

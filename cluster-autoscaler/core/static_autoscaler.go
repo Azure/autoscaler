@@ -35,6 +35,7 @@ import (
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
@@ -61,6 +62,11 @@ import (
 	"k8s.io/utils/integer"
 
 	klog "k8s.io/klog/v2"
+
+	ctx "context"
+
+	kube_errors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -148,6 +154,8 @@ func NewStaticAutoscaler(
 	scaleUpOrchestrator scaleup.Orchestrator,
 	deleteOptions options.NodeDeleteOptions,
 	drainabilityRules rules.Rules) *StaticAutoscaler {
+
+	klog.V(4).Infof("Creating new static autoscaler with opts: %v", opts)
 
 	clusterStateConfig := clusterstate.ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: opts.MaxTotalUnreadyPercentage,
@@ -307,6 +315,19 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) caerrors.AutoscalerErr
 
 	stateUpdateStart := time.Now()
 
+	// Fetch the configmap to ensure apiserver connectivity
+	// Listers are backed by a cache which means in cases when apiserver
+	// is unresponsive, you may get stale data
+	// One example of a bad scenario is if the cache data is empty, all
+	// nodes will be counted as unregistered nodes and eventually deleted
+	// after the unregistered node 15 min deletion threshold
+	// See more: https://github.com/kubernetes/autoscaler/pull/3737
+	_, err := a.ClientSet.CoreV1().ConfigMaps(a.ConfigNamespace).Get(ctx.TODO(), a.AutoscalingContext.StatusConfigMapName, metav1.GetOptions{})
+	if err != nil && !kube_errors.IsNotFound(err) {
+		klog.Errorf("Failed to fetch %s configmap: %v, skipping iteration", a.AutoscalingContext.StatusConfigMapName, err)
+		return caerrors.ToAutoscalerError(caerrors.ApiCallError, err)
+	}
+
 	// Get nodes and pods currently living on cluster
 	allNodes, readyNodes, typedErr := a.obtainNodeLists()
 	if typedErr != nil {
@@ -387,6 +408,11 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) caerrors.AutoscalerErr
 		klog.Errorf("Failed to update cluster state: %v", typedErr)
 		return typedErr
 	}
+
+	// Cleanup Deletion taints from already deallocated nodes so that they dont prevent scheduling for the
+	// next workload
+	// TODO: when removing Deallocate mode, remove this call for cleanUpTaintsFromDeallocatedNodes
+	a.cleanUpTaintsFromDeallocatedNodes(allNodes)
 	metrics.UpdateDurationFromStart(metrics.UpdateState, stateUpdateStart)
 
 	scaleUpStatus := &status.ScaleUpStatus{Result: status.ScaleUpNotTried}
@@ -813,6 +839,7 @@ func (a *StaticAutoscaler) removeOldUnregisteredNodes(allUnregisteredNodes []clu
 
 		err = nodeGroup.DeleteNodes(nodesToDelete)
 		csr.InvalidateNodeInstancesCacheEntry(nodeGroup)
+		csr.RemoveUnregisteredNodesFromList(unregisteredNodesToDelete)
 		if err != nil {
 			klog.Warningf("Failed to remove %v unregistered nodes from node group %s: %v", len(nodesToDelete), nodeGroupId, err)
 			for _, node := range nodesToDelete {
@@ -1126,4 +1153,34 @@ func nodeNames(ns []*apiv1.Node) []string {
 		names[i] = node.Name
 	}
 	return names
+}
+
+// cleanUpTaintsFromDeallocatedNodes cleans up the ToBeDeleted taint from already deallocated nodes
+// so in the future they can be started and workloads can be scheduled on them
+// This is a best effort check for "Deallocation" because it can take sometime for cloudprovider
+// to apply the shutdown taint. In those cases, we resort to the unreacahble taint.
+// TODO: When removing deallocate mode, remove this func.
+func (a *StaticAutoscaler) cleanUpTaintsFromDeallocatedNodes(allNodes []*apiv1.Node) {
+	for _, node := range allNodes {
+		if !(taints.HasShutdownTaint(node) || taints.HasUnreachableTaint(node)) || !taints.HasToBeDeletedTaint(node) {
+			continue
+		}
+		nodeGroup, err := a.AutoscalingContext.CloudProvider.NodeGroupForNode(node)
+		if err != nil {
+			klog.V(5).Infof("Failed to get node group for %s: %v", node.Name, err)
+			continue
+		}
+		if nodeGroup == nil || reflect.ValueOf(nodeGroup).IsNil() {
+			klog.V(5).Infof("No node group for node %s, skipping", node)
+			continue
+		}
+		// TODO: remove this check when deallocate mode is removed
+		ng, ok := nodeGroup.(deallocate.PolicyNodeGroup)
+		if ok && ng.ScaleDownPolicy() == deallocate.Deallocate {
+			klog.V(3).Infof("Node %s is deallocated - attempting to remove taint from the node.", node.Name)
+			if _, err := taints.CleanToBeDeleted(node, a.ClientSet, a.AutoscalingContext.CordonNodeBeforeTerminate); err != nil {
+				klog.Errorf("error while removing taint from node %s: %s", node.Name, err.Error())
+			}
+		}
+	}
 }

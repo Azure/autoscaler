@@ -136,8 +136,7 @@ func BuildAzureConfig(configReader io.Reader) (*Config, error) {
 	cfg.VMType = providerazureconsts.VMTypeVMSS
 	cfg.MaxDeploymentsCount = int64(defaultMaxDeploymentsCount)
 	cfg.StrictCacheUpdates = false
-	cfg.EnableLabelPredictionsOnTemplate = true
-
+	cfg.EnableLabelPredictionsOnTemplate = false
 	// Config file overrides defaults
 	if configReader != nil {
 		body, err := ioutil.ReadAll(configReader)
