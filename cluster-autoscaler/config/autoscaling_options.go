@@ -158,6 +158,9 @@ type AutoscalingOptions struct {
 	ScaleDownDelayAfterDelete time.Duration
 	// ScaleDownDelayAfterFailure sets the duration before the next scale down attempt if scale down results in an error
 	ScaleDownDelayAfterFailure time.Duration
+	// ScaleDownDelayTypeLocal sets if the --scale-down-delay-after-* flags should be applied locally per nodegroup
+	// or globally across all nodegroups
+	ScaleDownDelayTypeLocal bool
 	// ScaleDownNonEmptyCandidatesCount is the maximum number of non empty nodes
 	// considered at once as candidates for scale down.
 	ScaleDownNonEmptyCandidatesCount int
@@ -291,4 +294,8 @@ type KubeClientOptions struct {
 	KubeConfigPath string
 	// APIContentType specifies type of requests sent to APIServer.
 	APIContentType string
+	// Burst setting for kubernetes client
+	KubeClientBurst int
+	// QPS setting for kubernetes client
+	KubeClientQPS float32
 }

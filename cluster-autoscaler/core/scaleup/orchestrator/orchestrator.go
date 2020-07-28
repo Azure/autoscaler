@@ -74,7 +74,7 @@ func (o *ScaleUpOrchestrator) Initialize(
 	o.clusterStateRegistry = clusterStateRegistry
 	o.taintConfig = taintConfig
 	o.resourceManager = resource.NewManager(processors.CustomResourcesProcessor)
-	o.scaleUpExecutor = newScaleUpExecutor(autoscalingContext, clusterStateRegistry)
+	o.scaleUpExecutor = newScaleUpExecutor(autoscalingContext, processors.ScaleStateNotifier)
 	o.initialized = true
 }
 
@@ -442,7 +442,7 @@ func (o *ScaleUpOrchestrator) filterValidScaleUpNodeGroups(
 			continue
 		}
 		autoscalingOptions, err := nodeGroup.GetOptions(o.autoscalingContext.NodeGroupDefaults)
-		if err != nil {
+		if err != nil && err != cloudprovider.ErrNotImplemented {
 			klog.Errorf("Couldn't get autoscaling options for ng: %v", nodeGroup.Id())
 		}
 		numNodes := 1
@@ -499,7 +499,7 @@ func (o *ScaleUpOrchestrator) ComputeExpansionOption(
 	metrics.UpdateDurationFromStart(metrics.Estimate, estimateStart)
 
 	autoscalingOptions, err := nodeGroup.GetOptions(o.autoscalingContext.NodeGroupDefaults)
-	if err != nil {
+	if err != nil && err != cloudprovider.ErrNotImplemented {
 		klog.Errorf("Failed to get autoscaling options for node group %s: %v", nodeGroup.Id(), err)
 	}
 	if autoscalingOptions != nil && autoscalingOptions.ZeroOrMaxNodeScaling {
@@ -639,7 +639,7 @@ func (o *ScaleUpOrchestrator) ComputeSimilarNodeGroups(
 	}
 
 	autoscalingOptions, err := nodeGroup.GetOptions(o.autoscalingContext.NodeGroupDefaults)
-	if err != nil {
+	if err != nil && err != cloudprovider.ErrNotImplemented {
 		klog.Errorf("Failed to get autoscaling options for node group %s: %v", nodeGroup.Id(), err)
 	}
 	if autoscalingOptions != nil && autoscalingOptions.ZeroOrMaxNodeScaling {

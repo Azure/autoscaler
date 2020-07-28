@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -28,7 +29,7 @@ import (
 	"syscall"
 	"time"
 
-	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/actuation"
+	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
 	"k8s.io/autoscaler/cluster-autoscaler/debuggingsnapshot"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/predicatechecker"
 	kubelet_config "k8s.io/kubernetes/pkg/kubelet/apis/config"
@@ -45,6 +46,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/core"
 	"k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor"
+	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/actuation"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
@@ -64,6 +66,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/version"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	kube_flag "k8s.io/component-base/cli/flag"
@@ -103,8 +106,8 @@ var (
 	kubernetes              = flag.String("kubernetes", "", "Kubernetes master location. Leave blank for default")
 	kubeConfigFile          = flag.String("kubeconfig", "", "Path to kubeconfig file with authorization and master location information.")
 	kubeAPIContentType      = flag.String("kube-api-content-type", "application/vnd.kubernetes.protobuf", "Content type of requests sent to apiserver.")
-	_                       = flag.Int("kube-client-burst", rest.DefaultBurst, "Burst value for kubernetes client. (Deprecated, relay on APF for rate limiting)")
-	_                       = flag.Float64("kube-client-qps", float64(rest.DefaultQPS), "QPS value for kubernetes client. (Deprecated, relay on APF for rate limiting)")
+	kubeClientBurst         = flag.Int("kube-client-burst", rest.DefaultBurst, "Burst value for kubernetes client.")
+	kubeClientQPS           = flag.Float64("kube-client-qps", float64(rest.DefaultQPS), "QPS value for kubernetes client.")
 	cloudConfig             = flag.String("cloud-config", "", "The path to the cloud provider configuration file.  Empty string for no configuration file.")
 	namespace               = flag.String("namespace", "kube-system", "Namespace in which cluster-autoscaler run.")
 	enforceNodeGroupMinSize = flag.Bool("enforce-node-group-min-size", false, "Should CA scale up the node group to the configured min size if needed.")
@@ -112,9 +115,11 @@ var (
 	scaleDownUnreadyEnabled = flag.Bool("scale-down-unready-enabled", true, "Should CA scale down unready nodes of the cluster")
 	scaleDownDelayAfterAdd  = flag.Duration("scale-down-delay-after-add", 10*time.Minute,
 		"How long after scale up that scale down evaluation resumes")
+	scaleDownDelayTypeLocal = flag.Bool("scale-down-delay-type-local", false,
+		"Should --scale-down-delay-after-* flags be applied locally per nodegroup or globally across all nodegroups")
 	scaleDownDelayAfterDelete = flag.Duration("scale-down-delay-after-delete", 0,
 		"How long after node deletion that scale down evaluation resumes, defaults to scanInterval")
-	scaleDownDelayAfterFailure = flag.Duration("scale-down-delay-after-failure", 3*time.Minute,
+	scaleDownDelayAfterFailure = flag.Duration("scale-down-delay-after-failure", config.DefaultScaleDownDelayAfterFailure,
 		"How long after scale down failure that scale down evaluation resumes")
 	scaleDownUnneededTime = flag.Duration("scale-down-unneeded-time", config.DefaultScaleDownUnneededTime,
 		"How long a node should be unneeded before it is eligible for scale down")
@@ -144,7 +149,7 @@ var (
 	schedulerConfigFile         = flag.String(config.SchedulerConfigFileFlag, "", "scheduler-config allows changing configuration of in-tree scheduler plugins acting on PreFilter and Filter extension points")
 	nodeDeletionDelayTimeout    = flag.Duration("node-deletion-delay-timeout", 2*time.Minute, "Maximum time CA waits for removing delay-deletion.cluster-autoscaler.kubernetes.io/ annotations before deleting the node.")
 	nodeDeletionBatcherInterval = flag.Duration("node-deletion-batcher-interval", 0*time.Second, "How long CA ScaleDown gather nodes to delete them in batch.")
-	scanInterval                = flag.Duration("scan-interval", 10*time.Second, "How often cluster is reevaluated for scale up or down")
+	scanInterval                = flag.Duration("scan-interval", config.DefaultScanInterval, "How often cluster is reevaluated for scale up or down")
 	maxNodesTotal               = flag.Int("max-nodes-total", 0, "Maximum number of nodes in all node groups. Cluster autoscaler will not grow the cluster beyond this number.")
 	coresTotal                  = flag.String("cores-total", minMaxFlagString(0, config.DefaultMaxClusterCores), "Minimum and maximum number of cores in cluster, in the format <min>:<max>. Cluster autoscaler will not scale the cluster beyond these numbers.")
 	memoryTotal                 = flag.String("memory-total", minMaxFlagString(0, config.DefaultMaxClusterMemory), "Minimum and maximum number of gigabytes of memory in cluster, in the format <min>:<max>. Cluster autoscaler will not scale the cluster beyond these numbers.")
@@ -250,6 +255,18 @@ var (
 			"--max-graceful-termination-sec flag should not be set when this flag is set. Not setting this flag will use unordered evictor by default."+
 			"Priority evictor reuses the concepts of drain logic in kubelet(https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2712-pod-priority-based-graceful-node-shutdown#migration-from-the-node-graceful-shutdown-feature)."+
 			"Eg. flag usage:  '10000:20,1000:100,0:60'")
+	configPath = flag.String("config-path", "", "The path for the mounted ConfigMap containing the settings used for dynamic reconfiguration. Set as empty string to use static mode.")
+)
+
+// fork-specific flags that are no longer functional but kept for compatibility.
+var (
+	enableForceDelete         = flag.Bool("enable-force-delete", false, "Whether to enable force deletion")
+	enableDynamicInstanceList = flag.Bool("enable-dynamic-instance-list", false, "Whether to enable dynamic instance list workflow")
+	enableDetailedCSEMessage  = flag.Bool("enable-detailed-cse-message", false, "Whether to enable emitting error messages in CSE error body")
+)
+
+var (
+	configFetcher dynamic.ConfigFetcher
 )
 
 func isFlagPassed(name string) bool {
@@ -354,9 +371,9 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		MaxMemoryTotal:                   maxMemoryTotal,
 		MinMemoryTotal:                   minMemoryTotal,
 		GpuTotal:                         parsedGpuTotal,
-		NodeGroups:                       *nodeGroupsFlag,
 		EnforceNodeGroupMinSize:          *enforceNodeGroupMinSize,
 		ScaleDownDelayAfterAdd:           *scaleDownDelayAfterAdd,
+		ScaleDownDelayTypeLocal:          *scaleDownDelayTypeLocal,
 		ScaleDownDelayAfterDelete:        *scaleDownDelayAfterDelete,
 		ScaleDownDelayAfterFailure:       *scaleDownDelayAfterFailure,
 		ScaleDownEnabled:                 *scaleDownEnabled,
@@ -420,7 +437,46 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		},
 		DynamicNodeDeleteDelayAfterTaintEnabled: *dynamicNodeDeleteDelayAfterTaintEnabled,
 		BypassedSchedulers:                      scheduler_util.GetBypassedSchedulersMap(*bypassedSchedulers),
+		NodeGroups: func() []string {
+			// Temporary + fork only, will be removed after CA is made restartable by PUT AP and have NodeGroups passed in by flags.
+			// Will fetch from ConfigMap rather than flags for now.
+			configFetcher = dynamic.NewConfigFetcher(dynamic.ConfigFetcherOptions{
+				ConfigPath: "/opt/conf/autoscaler/settings.json",
+			})
+			if updatedConfig, err := configFetcher.FetchConfigIfUpdated(); err != nil {
+				// Ideally we want this to be fatal, but that would resulted in CrashLoopBackOff in a race condition where the configmap takes time to initialize, delaying the initialization.
+				klog.Errorf("failed to fetch updated NodeGroups config: %v, could be resulted from the configmap not initialized yet", err)
+			} else if updatedConfig != nil {
+				// First fetch is always considered updated if not empty
+				klog.V(3).Infof("Fetched NodeGroups: %v", updatedConfig.NodeGroupSpecStrings())
+				return updatedConfig.NodeGroupSpecStrings()
+			}
+			return []string{}
+		}(),
 	}
+}
+
+func getKubeConfig() *rest.Config {
+	if *kubeConfigFile != "" {
+		klog.V(1).Infof("Using kubeconfig file: %s", *kubeConfigFile)
+		// use the current context in kubeconfig
+		config, err := clientcmd.BuildConfigFromFlags("", *kubeConfigFile)
+		if err != nil {
+			klog.Fatalf("Failed to build config: %v", err)
+		}
+		return config
+	}
+	url, err := url.Parse(*kubernetes)
+	if err != nil {
+		klog.Fatalf("Failed to parse Kubernetes url: %v", err)
+	}
+
+	kubeConfig, err := config.GetKubeClientConfig(url)
+	if err != nil {
+		klog.Fatalf("Failed to build Kubernetes client configuration: %v", err)
+	}
+
+	return kubeConfig
 }
 
 func registerSignalHandlers(autoscaler core.Autoscaler) {
@@ -442,6 +498,8 @@ func buildAutoscaler(debuggingSnapshotter debuggingsnapshot.DebuggingSnapshotter
 	// Create basic config from flags.
 	autoscalingOptions := createAutoscalingOptions()
 
+	autoscalingOptions.KubeClientOpts.KubeClientBurst = int(*kubeClientBurst)
+	autoscalingOptions.KubeClientOpts.KubeClientQPS = float32(*kubeClientQPS)
 	kubeClient := kube_util.CreateKubeClient(autoscalingOptions.KubeClientOpts)
 
 	// Informer transform to trim ManagedFields for memory efficiency.
@@ -483,8 +541,17 @@ func buildAutoscaler(debuggingSnapshotter debuggingsnapshot.DebuggingSnapshotter
 		}
 		opts.Processors.ScaleDownCandidatesNotifier.Register(sdCandidatesSorting)
 	}
-	sdProcessor := scaledowncandidates.NewScaleDownCandidatesSortingProcessor(scaleDownCandidatesComparers)
-	opts.Processors.ScaleDownNodeProcessor = sdProcessor
+
+	cp := scaledowncandidates.NewCombinedScaleDownCandidatesProcessor()
+	cp.Register(scaledowncandidates.NewScaleDownCandidatesSortingProcessor(scaleDownCandidatesComparers))
+
+	if autoscalingOptions.ScaleDownDelayTypeLocal {
+		sdp := scaledowncandidates.NewScaleDownCandidatesDelayProcessor()
+		cp.Register(sdp)
+		opts.Processors.ScaleStateNotifier.Register(sdp)
+
+	}
+	opts.Processors.ScaleDownNodeProcessor = cp
 
 	var nodeInfoComparator nodegroupset.NodeInfoComparator
 	if len(autoscalingOptions.BalancingLabels) > 0 {
@@ -553,6 +620,17 @@ func run(healthCheck *metrics.HealthCheck, debuggingSnapshotter debuggingsnapsho
 				loopStart := time.Now()
 				metrics.UpdateLastTime(metrics.Main, loopStart)
 				healthCheck.UpdateLastActivity(loopStart)
+
+				// Temporary + fork only, will be removed after CA is made restartable by PUT AP and have NodeGroups passed in by flags.
+				// Will restart as soon as it changes to OM-induced restart + mimic passing in by flags.
+				// Expect configFetcher to be initialized. It contains the previous state to compare the difference to.
+				if updatedConfig, err := configFetcher.FetchConfigIfUpdated(); err != nil {
+					// Ideally we want this to be fatal, but that would resulted in CrashLoopBackOff in a race condition where the configmap takes time to initialize, delaying the initialization.
+					klog.Errorf("failed to fetch updated NodeGroups config: %v, could be resulted from the configmap not initialized yet", err)
+				} else if updatedConfig != nil {
+					klog.V(3).Infof("NodeGroups config has changed: %v, restarting...", updatedConfig.NodeGroupSpecStrings())
+					os.Exit(0)
+				}
 
 				err := autoscaler.RunOnce(loopStart)
 				if err != nil && err.Type() != errors.TransientError {
