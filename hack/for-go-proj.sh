@@ -22,7 +22,7 @@ CONTRIB_ROOT="$(dirname ${BASH_SOURCE})/.."
 PROJECT_NAMES=(addon-resizer cluster-autoscaler vertical-pod-autoscaler)
 
 if [[ $# -ne 1 ]]; then
-  echo "missing subcommand: [build|install|test]"
+  echo "missing subcommand: [build|install|test|coverage]"
   exit 1
 fi
 
@@ -35,6 +35,8 @@ case "${CMD}" in
     ;;
   "test")
     ;;
+  "coverage")
+    ;;
   *)
     echo "invalid subcommand: ${CMD}"
     exit 1
@@ -45,19 +47,30 @@ for project_name in ${PROJECT_NAMES[*]}; do
   (
     if [[ $project_name == cluster-autoscaler ]];then
       export GO111MODULE=off
+      vet="-vet=off" # new vet printf in go 1.24 gets triggered by GO111MODULE=off; disable until fixed in autoscaler
     else
       export GO111MODULE=auto
+      vet=""
     fi
 
     project=${CONTRIB_ROOT}/${project_name}
     echo "${CMD}ing ${project}"
     cd "${project}"
     case "${CMD}" in
+      "coverage")
+        if [[ -n $(find . -name "Godeps.json") ]]; then
+          godep go test ${vet} -coverprofile=coverage.txt -covermode=atomic -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v /cloudprovider/ && go list ./cloudprovider/azure/...)
+          pwd
+        else
+          go test ${vet} -coverprofile=coverage.txt -covermode=atomic -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v /cloudprovider/ && go list ./cloudprovider/azure/...)
+          pwd
+        fi
+        ;;
       "test")
         if [[ -n $(find . -name "Godeps.json") ]]; then
-          godep go test -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e)
+          godep go test ${vet} -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v /cloudprovider/ && go list ./cloudprovider/azure/...)
         else
-          go test -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v cluster-autoscaler/apis)
+          go test ${vet} -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v /cloudprovider/ && go list ./cloudprovider/azure/...)
         fi
         ;;
       *)
@@ -71,3 +84,8 @@ if [ "${CMD}" = "build" ] || [ "${CMD}" == "test" ]; then
   cd ${CONTRIB_ROOT}/vertical-pod-autoscaler/e2e
   go test -mod vendor -run=None ./...
 fi
+# if [ "${CMD}" == "coverage" ]; then
+#   cd ${CONTRIB_ROOT}/vertical-pod-autoscaler/e2e
+#   go test -coverprofile=coverage.out -covermode=atomic -mod vendor -run=None ./...
+# pwd
+# fi
