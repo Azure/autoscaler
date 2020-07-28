@@ -60,6 +60,11 @@ import (
 	"k8s.io/utils/integer"
 
 	klog "k8s.io/klog/v2"
+
+	ctx "context"
+
+	kube_errors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -145,6 +150,8 @@ func NewStaticAutoscaler(
 	scaleUpOrchestrator scaleup.Orchestrator,
 	deleteOptions options.NodeDeleteOptions,
 	drainabilityRules rules.Rules) *StaticAutoscaler {
+
+	klog.V(4).Infof("Creating new static autoscaler with opts: %v", opts)
 
 	clusterStateConfig := clusterstate.ClusterStateRegistryConfig{
 		MaxTotalUnreadyPercentage: opts.MaxTotalUnreadyPercentage,
@@ -292,6 +299,19 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) caerrors.AutoscalerErr
 
 	stateUpdateStart := time.Now()
 
+	// Fetch the configmap to ensure apiserver connectivity
+	// Listers are backed by a cache which means in cases when apiserver
+	// is unresponsive, you may get stale data
+	// One example of a bad scenario is if the cache data is empty, all
+	// nodes will be counted as unregistered nodes and eventually deleted
+	// after the unregistered node 15 min deletion threshold
+	// See more: https://github.com/kubernetes/autoscaler/pull/3737
+	_, err := a.ClientSet.CoreV1().ConfigMaps(a.ConfigNamespace).Get(ctx.TODO(), a.AutoscalingContext.StatusConfigMapName, metav1.GetOptions{})
+	if err != nil && !kube_errors.IsNotFound(err) {
+		klog.Errorf("Failed to fetch %s configmap: %v, skipping iteration", a.AutoscalingContext.StatusConfigMapName, err)
+		return caerrors.ToAutoscalerError(caerrors.ApiCallError, err)
+	}
+
 	// Get nodes and pods currently living on cluster
 	allNodes, readyNodes, typedErr := a.obtainNodeLists(a.CloudProvider)
 	if typedErr != nil {
@@ -377,6 +397,11 @@ func (a *StaticAutoscaler) RunOnce(currentTime time.Time) caerrors.AutoscalerErr
 		klog.Errorf("Failed to update cluster state: %v", typedErr)
 		return typedErr
 	}
+
+	// Cleanup Deletion taints from already deallocated nodes so that they dont prevent scheduling for the
+	// next workload
+	// TODO: when removing Deallocate mode, remove this call for cleanUpTaintsFromDeallocatedNodes
+	a.cleanUpTaintsFromDeallocatedNodes(allNodes)
 	metrics.UpdateDurationFromStart(metrics.UpdateState, stateUpdateStart)
 
 	scaleUpStatus := &status.ScaleUpStatus{Result: status.ScaleUpNotTried}
@@ -795,6 +820,7 @@ func (a *StaticAutoscaler) removeOldUnregisteredNodes(allUnregisteredNodes []clu
 
 		err = nodeGroup.DeleteNodes(nodesToDelete)
 		csr.InvalidateNodeInstancesCacheEntry(nodeGroup)
+		csr.RemoveUnregisteredNodesFromList(unregisteredNodesToDelete)
 		if err != nil {
 			klog.Warningf("Failed to remove %v unregistered nodes from node group %s: %v", len(nodesToDelete), nodeGroupId, err)
 			for _, node := range nodesToDelete {

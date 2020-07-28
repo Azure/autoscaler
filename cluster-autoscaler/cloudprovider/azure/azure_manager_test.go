@@ -18,6 +18,7 @@ package azure
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -33,6 +34,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	azclient "sigs.k8s.io/cloud-provider-azure/pkg/azclient"
 	azclients "sigs.k8s.io/cloud-provider-azure/pkg/azureclients"
@@ -64,7 +66,8 @@ const validAzureCfg = `{
 	"routeRateLimit": {
 		"cloudProviderRateLimit": true,
 		"cloudProviderRateLimitQPS": 3
-	}
+	},
+	"enableFastDeleteOnFailedProvisioning": true
 }`
 
 const validAzureCfgLegacy = `{
@@ -197,7 +200,26 @@ const (
 	testASG         = "test-asg"
 )
 
+func saveAndClearEnv() []string {
+	originalEnv := os.Environ()
+	os.Clearenv()
+	return originalEnv
+}
+
+func loadEnv(originalEnv []string) {
+	os.Clearenv()
+	for _, e := range originalEnv {
+		parts := strings.SplitN(e, "=", 2)
+		os.Setenv(parts[0], parts[1])
+	}
+}
+
 func TestCreateAzureManagerValidConfig(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockVMClient := mockvmclient.NewMockInterface(ctrl)
@@ -273,8 +295,9 @@ func TestCreateAzureManagerValidConfig(t *testing.T) {
 				},
 			},
 		},
-		VmssVmsCacheJitter:  120,
-		MaxDeploymentsCount: 8,
+		VmssVmsCacheJitter:                   120,
+		MaxDeploymentsCount:                  8,
+		EnableFastDeleteOnFailedProvisioning: true,
 	}
 
 	assert.NoError(t, err)
@@ -282,6 +305,11 @@ func TestCreateAzureManagerValidConfig(t *testing.T) {
 }
 
 func TestCreateAzureManagerLegacyConfig(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockVMClient := mockvmclient.NewMockInterface(ctrl)
@@ -365,6 +393,11 @@ func TestCreateAzureManagerLegacyConfig(t *testing.T) {
 }
 
 func TestCreateAzureManagerValidConfigForStandardVMType(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockVMClient := mockvmclient.NewMockInterface(ctrl)
@@ -472,12 +505,22 @@ func TestCreateAzureManagerValidConfigForStandardVMType(t *testing.T) {
 }
 
 func TestCreateAzureManagerValidConfigForStandardVMTypeWithoutDeploymentParameters(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	manager, err := createAzureManagerInternal(strings.NewReader(validAzureCfgForStandardVMTypeWithoutDeploymentParameters), cloudprovider.NodeGroupDiscoveryOptions{}, &azClient{})
 	expectedErr := "open /var/lib/azure/azuredeploy.parameters.json: no such file or directory"
 	assert.Nil(t, manager)
 	assert.Equal(t, expectedErr, err.Error(), "return error does not match, expected: %v, actual: %v", expectedErr, err.Error())
 }
 func TestCreateAzureManagerValidConfigForVMsPool(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockVMClient := mockvmclient.NewMockInterface(ctrl)
@@ -565,6 +608,11 @@ func TestCreateAzureManagerValidConfigForVMsPool(t *testing.T) {
 }
 
 func TestCreateAzureManagerWithNilConfig(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockVMClient := mockvmclient.NewMockInterface(ctrl)
@@ -648,12 +696,13 @@ func TestCreateAzureManagerWithNilConfig(t *testing.T) {
 				},
 			},
 		},
-		ClusterName:           "mycluster",
-		ClusterResourceGroup:  "myrg",
-		ARMBaseURLForAPClient: "nodeprovisioner-svc.nodeprovisioner.svc.cluster.local",
-		Deployment:            "deployment",
-		VmssVmsCacheJitter:    90,
-		MaxDeploymentsCount:   8,
+		ClusterName:                          "mycluster",
+		ClusterResourceGroup:                 "myrg",
+		ARMBaseURLForAPClient:                "nodeprovisioner-svc.nodeprovisioner.svc.cluster.local",
+		Deployment:                           "deployment",
+		VmssVmsCacheJitter:                   90,
+		MaxDeploymentsCount:                  8,
+		EnableFastDeleteOnFailedProvisioning: true,
 	}
 
 	t.Setenv("ARM_CLOUD", "AzurePublicCloud")
@@ -686,6 +735,7 @@ func TestCreateAzureManagerWithNilConfig(t *testing.T) {
 	t.Setenv("CLUSTER_NAME", "mycluster")
 	t.Setenv("ARM_CLUSTER_RESOURCE_GROUP", "myrg")
 	t.Setenv("ARM_BASE_URL_FOR_AP_CLIENT", "nodeprovisioner-svc.nodeprovisioner.svc.cluster.local")
+	t.Setenv("AZURE_ENABLE_FAST_DELETE_ON_FAILED_PROVISIONING", "true")
 
 	t.Run("environment variables correctly set", func(t *testing.T) {
 		manager, err := createAzureManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, mockAzClient)
@@ -810,6 +860,11 @@ func TestCreateAzureManagerWithNilConfig(t *testing.T) {
 }
 
 func TestCreateAzureManagerWithEnvOverridingConfig(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockVMClient := mockvmclient.NewMockInterface(ctrl)
@@ -931,6 +986,7 @@ func TestCreateAzureManagerWithEnvOverridingConfig(t *testing.T) {
 	t.Setenv("CLUSTER_NAME", "mycluster")
 	t.Setenv("ARM_CLUSTER_RESOURCE_GROUP", "myrg")
 	t.Setenv("ARM_BASE_URL_FOR_AP_CLIENT", "nodeprovisioner-svc.nodeprovisioner.svc.cluster.local")
+	t.Setenv("AZURE_ENABLE_FAST_DELETE_ON_FAILED_PROVISIONING", "true")
 
 	t.Run("environment variables correctly set", func(t *testing.T) {
 		manager, err := createAzureManagerInternal(strings.NewReader(validAzureCfgForStandardVMType), cloudprovider.NodeGroupDiscoveryOptions{}, mockAzClient)
@@ -940,18 +996,28 @@ func TestCreateAzureManagerWithEnvOverridingConfig(t *testing.T) {
 }
 
 func TestCreateAzureManagerInvalidConfig(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	_, err := createAzureManagerInternal(strings.NewReader(invalidAzureCfg), cloudprovider.NodeGroupDiscoveryOptions{}, &azClient{})
 	assert.Error(t, err, "failed to unmarshal config body")
 }
 
 func TestFetchExplicitNodeGroups(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	min, max, name := 1, 15, "test-asg"
 	ngdo := cloudprovider.NodeGroupDiscoveryOptions{
 		NodeGroupSpecs: []string{
-			fmt.Sprintf("%d:%d:%s", min, max, name),
+			fmt.Sprintf("%d:%d:%s:%s", min, max, deallocate.Delete, name),
 		},
 	}
 
@@ -1020,6 +1086,11 @@ func TestFetchExplicitNodeGroups(t *testing.T) {
 }
 
 func TestGetFilteredAutoscalingGroupsVmss(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -1058,13 +1129,18 @@ func TestGetFilteredAutoscalingGroupsVmss(t *testing.T) {
 		enableForceDelete:        manager.config.EnableForceDelete,
 		curSize:                  3,
 		sizeRefreshPeriod:        manager.azureCache.refreshInterval,
-		getVmssSizeRefreshPeriod: time.Duration(manager.azureCache.refreshInterval) * time.Second,
+		getVmssSizeRefreshPeriod: manager.azureCache.refreshInterval,
 		InstanceCache:            InstanceCache{instancesRefreshPeriod: defaultVmssInstancesRefreshPeriod},
 	}}
 	assert.True(t, assert.ObjectsAreEqualValues(expectedAsgs, asgs), "expected %#v, but found: %#v", expectedAsgs, asgs)
 }
 
 func TestGetFilteredAutoscalingGroupsWithInvalidVMType(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -1089,6 +1165,11 @@ func TestGetFilteredAutoscalingGroupsWithInvalidVMType(t *testing.T) {
 }
 
 func TestFetchAutoAsgsVmss(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -1143,6 +1224,11 @@ func TestFetchAutoAsgsVmss(t *testing.T) {
 }
 
 func TestManagerRefreshAndCleanup(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -1153,6 +1239,11 @@ func TestManagerRefreshAndCleanup(t *testing.T) {
 }
 
 func TestGetScaleSetOptions(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
 	manager := &AzureManager{
 		azureCache: &azureCache{
 			autoscalingOptions: make(map[azureRef]map[string]string),
@@ -1194,6 +1285,54 @@ func TestGetScaleSetOptions(t *testing.T) {
 	manager.azureCache.autoscalingOptions[azureRef{Name: "test3"}] = map[string]string{}
 	opts = manager.GetScaleSetOptions("test3", defaultOptions)
 	assert.Equal(t, *opts, defaultOptions)
+}
+
+// TestVMSSNotFound ensures that AzureManager is still able to be built
+// if one nodeGroup (VMSS) is not found. Previously, we would fail on manager creation
+// if even one expected nodeGroup was not found. When manager creation errored out,
+// BuildAzure returns log.Fatalf() which caused CAS to crash.
+func TestVMSSNotFound(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() {
+		loadEnv(originalEnv)
+	})
+
+	// client setup
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
+	mockVMClient := mockvmclient.NewMockInterface(ctrl)
+	mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+	client := azClient{}
+	client.virtualMachineScaleSetsClient = mockVMSSClient
+	client.virtualMachinesClient = mockVMClient
+	client.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+	// Expect that no vmss are present in the vmss client
+	mockVMSSVMClient.EXPECT().List(gomock.Any(), "fakeId", testASG, gomock.Any()).Return([]compute.VirtualMachineScaleSetVM{}, nil).AnyTimes()
+	mockVMClient.EXPECT().List(gomock.Any(), "fakeId").Return([]compute.VirtualMachine{}, nil).AnyTimes()
+	mockVMSSClient.EXPECT().List(gomock.Any(), "fakeId").Return([]compute.VirtualMachineScaleSet{}, nil).AnyTimes()
+
+	// Add explicit node group to look for during init
+	ngdo := cloudprovider.NodeGroupDiscoveryOptions{
+		NodeGroupSpecs: []string{
+			fmt.Sprintf("%d:%d:%s", 1, 3, testASG),
+		},
+	}
+
+	// We expect the initial BuildAzure flow to pass when a NodeGroup is detected
+	// that doesn't have a corresponding VMSS in the cache.
+	t.Run("should not error when VMSS not found in cache", func(t *testing.T) {
+		manager, err := createAzureManagerInternal(strings.NewReader(validAzureCfg), ngdo, &client)
+		assert.NoError(t, err)
+		// expect one nodegroup to be present
+		nodeGroups := manager.getNodeGroups()
+		assert.Len(t, nodeGroups, 1)
+		assert.Equal(t, nodeGroups[0].Id(), testASG)
+		// expect no scale sets to be present
+		scaleSets := manager.azureCache.getScaleSets()
+		assert.Len(t, scaleSets, 0)
+	})
 }
 
 func assertStructsMinimallyEqual(t *testing.T, struct1, struct2 interface{}) bool {
