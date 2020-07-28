@@ -148,7 +148,6 @@ func (o *ScaleUpOrchestrator) ScaleUp(
 	for _, nodeGroup := range validNodeGroups {
 		schedulablePods[nodeGroup.Id()] = o.SchedulablePods(podEquivalenceGroups, nodeGroup, nodeInfos[nodeGroup.Id()])
 	}
-
 	for _, nodeGroup := range validNodeGroups {
 		option := o.ComputeExpansionOption(nodeGroup, schedulablePods, nodeInfos, len(nodes)+len(upcomingNodes), now)
 		o.processors.BinpackingLimiter.MarkProcessed(o.autoscalingContext, nodeGroup.Id())
@@ -446,7 +445,7 @@ func (o *ScaleUpOrchestrator) filterValidScaleUpNodeGroups(
 			continue
 		}
 		autoscalingOptions, err := nodeGroup.GetOptions(o.autoscalingContext.NodeGroupDefaults)
-		if err != nil {
+		if err != nil && err != cloudprovider.ErrNotImplemented {
 			klog.Errorf("Couldn't get autoscaling options for ng: %v", nodeGroup.Id())
 		}
 		numNodes := 1
@@ -503,7 +502,7 @@ func (o *ScaleUpOrchestrator) ComputeExpansionOption(
 	metrics.UpdateDurationFromStart(metrics.Estimate, estimateStart)
 
 	autoscalingOptions, err := nodeGroup.GetOptions(o.autoscalingContext.NodeGroupDefaults)
-	if err != nil {
+	if err != nil && err != cloudprovider.ErrNotImplemented {
 		klog.Errorf("Failed to get autoscaling options for node group %s: %v", nodeGroup.Id(), err)
 	}
 	if autoscalingOptions != nil && autoscalingOptions.ZeroOrMaxNodeScaling {
@@ -575,7 +574,7 @@ func (o *ScaleUpOrchestrator) IsNodeGroupReadyToScaleUp(nodeGroup cloudprovider.
 	// Non-existing node groups are created later so skip check for them.
 	if nodeGroup.Exist() && !o.clusterStateRegistry.IsNodeGroupSafeToScaleUp(nodeGroup, now) {
 		// Hack that depends on internals of IsNodeGroupSafeToScaleUp.
-		if !o.clusterStateRegistry.IsNodeGroupHealthy(nodeGroup.Id()) {
+		if !o.clusterStateRegistry.IsNodeGroupHealthy(nodeGroup) {
 			klog.Warningf("Node group %s is not ready for scaleup - unhealthy", nodeGroup.Id())
 			return NotReadyReason
 		}
@@ -641,7 +640,7 @@ func (o *ScaleUpOrchestrator) ComputeSimilarNodeGroups(
 	}
 
 	autoscalingOptions, err := nodeGroup.GetOptions(o.autoscalingContext.NodeGroupDefaults)
-	if err != nil {
+	if err != nil && err != cloudprovider.ErrNotImplemented {
 		klog.Errorf("Failed to get autoscaling options for node group %s: %v", nodeGroup.Id(), err)
 	}
 	if autoscalingOptions != nil && autoscalingOptions.ZeroOrMaxNodeScaling {

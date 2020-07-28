@@ -526,7 +526,69 @@ func TestSanitizeTaints(t *testing.T) {
 		StatusTaints:  map[string]bool{"status-me": true},
 	}
 
-	newTaints := SanitizeTaints(node.Spec.Taints, taintConfig)
+	newTaints := SanitizeTaints(node.Spec.Taints, taintConfig, false)
 	require.Equal(t, len(newTaints), 1)
 	assert.Equal(t, newTaints[0].Key, "test-taint")
+}
+
+func TestSanitizeTaintsSystemNodePool(t *testing.T) {
+	node := &apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "node-sanitize-taints",
+			CreationTimestamp: metav1.NewTime(time.Now()),
+			Labels: map[string]string{
+				"kubernetes.azure.com/mode": "system",
+			},
+		},
+		Spec: apiv1.NodeSpec{
+			Taints: []apiv1.Taint{
+				{
+					Key:    IgnoreTaintPrefix + "another-taint",
+					Value:  "myValue",
+					Effect: apiv1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    ReschedulerTaintKey,
+					Value:  "test1",
+					Effect: apiv1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "test-taint",
+					Value:  "test2",
+					Effect: apiv1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    ToBeDeletedTaint,
+					Value:  "1",
+					Effect: apiv1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "ignore-me",
+					Value:  "1",
+					Effect: apiv1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "node.kubernetes.io/memory-pressure",
+					Value:  "1",
+					Effect: apiv1.TaintEffectNoSchedule,
+				},
+				{
+					Key:    "ignore-taint.cluster-autoscaler.kubernetes.io/to-be-ignored",
+					Value:  "I-am-the-invisible-man-Incredible-how-you-can",
+					Effect: apiv1.TaintEffectNoSchedule,
+				},
+			},
+		},
+		Status: apiv1.NodeStatus{
+			Conditions: []apiv1.NodeCondition{},
+		},
+	}
+	taintConfig := TaintConfig{
+		IgnoredTaints: map[string]bool{"ignore-me": true},
+	}
+
+	newTaints := SanitizeTaints(node.Spec.Taints, taintConfig, true)
+	require.Equal(t, len(newTaints), 2)
+	assert.Equal(t, newTaints[0].Key, ReschedulerTaintKey)
+	assert.Equal(t, newTaints[1].Key, "test-taint")
 }

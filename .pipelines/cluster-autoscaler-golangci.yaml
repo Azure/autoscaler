@@ -1,0 +1,39 @@
+pr:
+  - master
+  - cluster-autoscaler-release-*
+
+variables:
+  - name: GOPATH
+    value: $(Agent.BuildDirectory)/go
+  - name: GOBIN
+    value: $(GOPATH)/bin
+  - name: GO111MODULE
+    value: auto
+  - name: autoscaler.clone.dir
+    value: go/src/k8s.io/autoscaler
+  # There are many references to alternative container registries in this repository, including
+  # in sample deployment artifacts for other cloud providers, and in VPA; none of these are relevant for this build.
+  # Disable container registry analysis to eliminate noise. For more information please visit: https://aka.ms/sscatask
+  - name: DisableDockerDetector
+    value: true
+  - name: DisableKubernetesDeploymentDetector
+    value: true
+
+jobs:
+  - job: cluster_autoscaler_golinters
+    pool: staging-pool-amd64-mariner-2
+    displayName: Cluster Autoscaler Azure golinters
+    workspace:
+      clean: all
+    steps:
+      - checkout: self
+        path: $(autoscaler.clone.dir)
+        fetchDepth: "1"
+      - script: |
+          cluster-autoscaler/cloudprovider/azure/hack/verify-golinter-azure.sh pipeline
+        displayName: Run golangci-lint
+      - task: PublishTestResults@2
+        displayName: Publish Test Results
+        inputs:
+          testResultsFiles: "**/junit.xml"
+        condition: succeededOrFailed()

@@ -23,6 +23,12 @@ import (
 // AutoscalerErrorType describes a high-level category of a given error
 type AutoscalerErrorType string
 
+// AutoscalerErrorReason is a more detailed reason for the failed operation
+type AutoscalerErrorReason string
+
+// CloudProviderErrorReason providers more details on errors of type CloudProviderError
+type CloudProviderErrorReason AutoscalerErrorReason
+
 // AutoscalerError contains information about Autoscaler errors
 type AutoscalerError interface {
 	// Error implements golang error interface
@@ -30,6 +36,9 @@ type AutoscalerError interface {
 
 	// Type returns the type of AutoscalerError
 	Type() AutoscalerErrorType
+
+	// Reason returns the reason of the AutoscalerError
+	Reason() AutoscalerErrorReason
 
 	// AddPrefix adds a prefix to error message.
 	// Returns the error it's called for convenient inline use.
@@ -41,30 +50,34 @@ type AutoscalerError interface {
 }
 
 type autoscalerErrorImpl struct {
-	errorType AutoscalerErrorType
-	msg       string
+	errorType   AutoscalerErrorType
+	errorReason AutoscalerErrorReason
+	msg         string
 }
 
 const (
 	// CloudProviderError is an error related to underlying infrastructure
-	CloudProviderError AutoscalerErrorType = "cloudProviderError"
+	CloudProviderError AutoscalerErrorType = "CloudProviderError"
 	// ApiCallError is an error related to communication with k8s API server
-	ApiCallError AutoscalerErrorType = "apiCallError"
+	ApiCallError AutoscalerErrorType = "ApiCallError"
+	// Timeout is an error related to nodes not joining the cluster in maxNodeProvisionTime
+	Timeout AutoscalerErrorType = "Timeout"
 	// InternalError is an error inside Cluster Autoscaler
-	InternalError AutoscalerErrorType = "internalError"
+	InternalError AutoscalerErrorType = "InternalError"
 	// TransientError is an error that causes us to skip a single loop, but
 	// does not require any additional action.
-	TransientError AutoscalerErrorType = "transientError"
+	TransientError AutoscalerErrorType = "TransientError"
 	// ConfigurationError is an error related to bad configuration provided
 	// by a user.
-	ConfigurationError AutoscalerErrorType = "configurationError"
+	ConfigurationError AutoscalerErrorType = "ConfigurationError"
 	// NodeGroupDoesNotExistError signifies that a NodeGroup
 	// does not exist.
 	NodeGroupDoesNotExistError AutoscalerErrorType = "nodeGroupDoesNotExistError"
-	// UnexpectedScaleDownStateError means Cluster Autoscaler thinks ongoing
-	// scale down is already removing too much and so further node removals
-	// shouldn't be attempted.
-	UnexpectedScaleDownStateError AutoscalerErrorType = "unexpectedScaleDownStateError"
+)
+
+const (
+	// NodeRegistration signifies an error with node registering
+	NodeRegistration AutoscalerErrorReason = "NodeRegistration"
 )
 
 // NewAutoscalerError returns new autoscaler error with a message constructed from format string
@@ -75,9 +88,30 @@ func NewAutoscalerError(errorType AutoscalerErrorType, msg string, args ...inter
 	}
 }
 
+// NewAutoscalerErrorWithReason returns new autoscaler error with a reason and a message constructed from format string
+func NewAutoscalerErrorWithReason(errorType AutoscalerErrorType, reason AutoscalerErrorReason, msg string, args ...interface{}) AutoscalerError {
+	return autoscalerErrorImpl{
+		errorType:   errorType,
+		errorReason: reason,
+		msg:         fmt.Sprintf(msg, args...),
+	}
+}
+
+// NewAutoscalerCloudProviderError returns new autoscaler error with a cloudprovider error type and a message constructed from format string
+func NewAutoscalerCloudProviderError(errorReason CloudProviderErrorReason, msg string, args ...interface{}) AutoscalerError {
+	return autoscalerErrorImpl{
+		errorType:   CloudProviderError,
+		errorReason: AutoscalerErrorReason(errorReason),
+		msg:         fmt.Sprintf(msg, args...),
+	}
+}
+
 // ToAutoscalerError converts an error to AutoscalerError with given type,
 // unless it already is an AutoscalerError (in which case it's not modified).
 func ToAutoscalerError(defaultType AutoscalerErrorType, err error) AutoscalerError {
+	if err == nil {
+		return nil
+	}
 	if e, ok := err.(AutoscalerError); ok {
 		return e
 	}
@@ -92,6 +126,10 @@ func (e autoscalerErrorImpl) Error() string {
 // Type returns the type of AutoscalerError
 func (e autoscalerErrorImpl) Type() AutoscalerErrorType {
 	return e.errorType
+}
+
+func (e autoscalerErrorImpl) Reason() AutoscalerErrorReason {
+	return e.errorReason
 }
 
 // AddPrefix adds a prefix to error message.

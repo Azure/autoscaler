@@ -41,6 +41,8 @@ const (
 	// DeletionCandidateTaint is a taint used to mark unneeded node as preferably unschedulable.
 	DeletionCandidateTaint = "DeletionCandidateOfClusterAutoscaler"
 
+	// ReschedulerTaintKey is the name of the taint created by rescheduler.
+	ReschedulerTaintKey = "CriticalAddonsOnly"
 	// IgnoreTaintPrefix any taint starting with it will be filtered out from autoscaler template node.
 	IgnoreTaintPrefix = "ignore-taint.cluster-autoscaler.kubernetes.io/"
 
@@ -192,6 +194,16 @@ func HasToBeDeletedTaint(node *apiv1.Node) bool {
 	return HasTaint(node, ToBeDeletedTaint)
 }
 
+// HasShutdownTaint returns true if cloudprovider node shutdown taint is applied on the node.
+func HasShutdownTaint(node *apiv1.Node) bool {
+	return HasTaint(node, cloudproviderapi.TaintNodeShutdown)
+}
+
+// HasUnreachableTaint returns true if unreachable taint is applied on the node.
+func HasUnreachableTaint(node *apiv1.Node) bool {
+	return HasTaint(node, apiv1.TaintNodeUnreachable)
+}
+
 // HasDeletionCandidateTaint returns true if DeletionCandidate taint is applied on the node.
 func HasDeletionCandidateTaint(node *apiv1.Node) bool {
 	return HasTaint(node, DeletionCandidateTaint)
@@ -324,10 +336,15 @@ func CleanAllTaints(nodes []*apiv1.Node, client kube_client.Interface, recorder 
 }
 
 // SanitizeTaints returns filtered taints
-func SanitizeTaints(taints []apiv1.Taint, taintConfig TaintConfig) []apiv1.Taint {
+func SanitizeTaints(taints []apiv1.Taint, taintConfig TaintConfig, isSystemPool bool) []apiv1.Taint {
 	var newTaints []apiv1.Taint
 	for _, taint := range taints {
 		switch taint.Key {
+		case ReschedulerTaintKey:
+			if !isSystemPool {
+				klog.V(4).Info("Removing rescheduler taint when creating template")
+				continue
+			}
 		case ToBeDeletedTaint:
 			klog.V(4).Infof("Removing autoscaler taint when creating template from node")
 			continue

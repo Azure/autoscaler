@@ -20,13 +20,17 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute" //nolint SA1019 - deprecated package
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+
 	apiv1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmclient/mockvmclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssclient/mockvmssclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssvmclient/mockvmssvmclient"
@@ -37,25 +41,54 @@ func newTestScaleSet(manager *AzureManager, name string) *ScaleSet {
 		azureRef: azureRef{
 			Name: name,
 		},
-		manager: manager,
-		minSize: 1,
-		maxSize: 5,
+		manager:           manager,
+		minSize:           1,
+		maxSize:           5,
+		enableForceDelete: manager.config.EnableForceDelete,
 	}
 }
 
-func newTestVMSSList(cap int64, name, loc string, orchmode compute.OrchestrationMode) []compute.VirtualMachineScaleSet {
+func newTestScaleSetMinSizeZero(manager *AzureManager, name string) *ScaleSet {
+	return &ScaleSet{
+		azureRef: azureRef{
+			Name: name,
+		},
+		manager:           manager,
+		minSize:           0,
+		maxSize:           5,
+		enableForceDelete: manager.config.EnableForceDelete,
+	}
+}
+
+func newTestVMSSList(capacity int64, name string, orchmode compute.OrchestrationMode) []compute.VirtualMachineScaleSet {
 	return []compute.VirtualMachineScaleSet{
 		{
 			Name: to.StringPtr(name),
 			Sku: &compute.Sku{
-				Capacity: to.Int64Ptr(cap),
+				Capacity: &capacity,
 				Name:     to.StringPtr("Standard_D4_v2"),
 			},
 			VirtualMachineScaleSetProperties: &compute.VirtualMachineScaleSetProperties{
 				OrchestrationMode: orchmode,
 			},
-			Location: to.StringPtr(loc),
+			Location: to.StringPtr(testEastUSLoc),
 			ID:       to.StringPtr(name),
+		},
+	}
+}
+
+func newTestVMSSListForEdgeZones(capacity int64, name string) *compute.VirtualMachineScaleSet {
+	return &compute.VirtualMachineScaleSet{
+		Name: to.StringPtr(name),
+		Sku: &compute.Sku{
+			Capacity: to.Int64Ptr(capacity),
+			Name:     to.StringPtr("Standard_D4_v2"),
+		},
+		VirtualMachineScaleSetProperties: &compute.VirtualMachineScaleSetProperties{},
+		Location:                         to.StringPtr(testEastUSLoc),
+		ExtendedLocation: &compute.ExtendedLocation{
+			Name: to.StringPtr("losangeles"),
+			Type: compute.ExtendedLocationTypes("EdgeZone"),
 		},
 	}
 }
@@ -89,24 +122,25 @@ func newTestVMList(count int) []compute.VirtualMachine {
 	return vmssVMList
 }
 
-func newApiNode(orchmode compute.OrchestrationMode, vmID int64) *apiv1.Node {
-	providerId := fakeVirtualMachineScaleSetVMID
+func newAPINode(orchmode compute.OrchestrationMode, vmID int64) *apiv1.Node {
+	providerID := fakeVirtualMachineScaleSetVMID
 
 	if orchmode == compute.Flexible {
-		providerId = fakeVirtualMachineVMID
+		providerID = fakeVirtualMachineVMID
 	}
 
 	node := &apiv1.Node{
 		Spec: apiv1.NodeSpec{
-			ProviderID: "azure://" + fmt.Sprintf(providerId, vmID),
+			ProviderID: azurePrefix + fmt.Sprintf(providerID, vmID),
 		},
 	}
 	return node
 }
+
 func TestMaxSize(t *testing.T) {
 	provider := newTestProvider(t)
 	registered := provider.azureManager.RegisterNodeGroup(
-		newTestScaleSet(provider.azureManager, "test-asg"))
+		newTestScaleSet(provider.azureManager, testASG))
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
 	assert.Equal(t, provider.NodeGroups()[0].MaxSize(), 5)
@@ -115,10 +149,19 @@ func TestMaxSize(t *testing.T) {
 func TestMinSize(t *testing.T) {
 	provider := newTestProvider(t)
 	registered := provider.azureManager.RegisterNodeGroup(
-		newTestScaleSet(provider.azureManager, "test-asg"))
+		newTestScaleSet(provider.azureManager, testASG))
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
 	assert.Equal(t, provider.NodeGroups()[0].MinSize(), 1)
+}
+
+func TestMinSizeZero(t *testing.T) {
+	provider := newTestProvider(t)
+	registered := provider.azureManager.RegisterNodeGroup(
+		newTestScaleSetMinSizeZero(provider.azureManager, testASG))
+	assert.True(t, registered)
+	assert.Equal(t, len(provider.NodeGroups()), 1)
+	assert.Equal(t, provider.NodeGroups()[0].MinSize(), 0)
 }
 
 func TestTargetSize(t *testing.T) {
@@ -126,41 +169,72 @@ func TestTargetSize(t *testing.T) {
 	defer ctrl.Finish()
 
 	orchestrationModes := [2]compute.OrchestrationMode{compute.Uniform, compute.Flexible}
+	expectedScaleSets := newTestVMSSList(3, testASG, compute.Uniform)
+	spotScaleSet := newTestVMSSList(5, "spot-vmss", compute.Uniform)[0]
+	spotScaleSet.VirtualMachineProfile = &compute.VirtualMachineScaleSetVMProfile{Priority: compute.Spot}
 
-	expectedScaleSets := newTestVMSSList(3, "test-asg", "eastus", compute.Uniform)
+	expectedScaleSets = append(expectedScaleSets, spotScaleSet)
 	expectedVMSSVMs := newTestVMSSVMList(3)
 	expectedVMs := newTestVMList(3)
 
 	for _, orchMode := range orchestrationModes {
 		provider := newTestProvider(t)
 		mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
-		mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
+		mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets,
+			nil).AnyTimes()
 		provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 
-		if orchMode == compute.Uniform {
-
-			mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-			mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
-			provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
-
-		} else {
-			provider.azureManager.config.EnableVmssFlex = true
-			mockVMClient := mockvmclient.NewMockInterface(ctrl)
-			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), "test-asg").Return(expectedVMs, nil).AnyTimes()
-			provider.azureManager.azClient.virtualMachinesClient = mockVMClient
-		}
-
+		// return a different capacity from GET API
+		spotScaleSet.Sku.Capacity = to.Int64Ptr(1)
+		mockVMSSClient.EXPECT().Get(gomock.Any(), provider.azureManager.config.ResourceGroup,
+			"spot-vmss").Return(spotScaleSet, nil).Times(1)
+		provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+		mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+		mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup,
+			testASG, gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+		provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
 		err := provider.azureManager.forceRefresh()
 		assert.NoError(t, err)
 
+		mockVMSSVMClient = mockvmssvmclient.NewMockInterface(ctrl)
+		provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+		mockVMClient := mockvmclient.NewMockInterface(ctrl)
+		provider.azureManager.azClient.virtualMachinesClient = mockVMClient
+
+		if orchMode == compute.Uniform {
+			mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup,
+				testASG, gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+		} else {
+			provider.azureManager.config.EnableVmssFlex = true
+			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), testASG).Return(expectedVMs, nil).AnyTimes()
+		}
+
+		err = provider.azureManager.forceRefresh()
+		assert.NoError(t, err)
+
 		registered := provider.azureManager.RegisterNodeGroup(
-			newTestScaleSet(provider.azureManager, "test-asg"))
+			newTestScaleSet(provider.azureManager, testASG))
 		assert.True(t, registered)
 		assert.Equal(t, len(provider.NodeGroups()), 1)
 
 		targetSize, err := provider.NodeGroups()[0].TargetSize()
 		assert.NoError(t, err)
 		assert.Equal(t, 3, targetSize)
+
+		targetSize, err = provider.NodeGroups()[0].TargetSize()
+		assert.NoError(t, err)
+		assert.Equal(t, 3, targetSize)
+
+		// With a spot nodegroup
+		spotNodeGroup := newTestScaleSet(provider.azureManager, "spot-vmss")
+		registered = provider.azureManager.RegisterNodeGroup(spotNodeGroup)
+		assert.True(t, registered)
+		assert.Equal(t, len(provider.NodeGroups()), 2)
+
+		targetSize, err = provider.NodeGroups()[1].TargetSize()
+		assert.NoError(t, err)
+		assert.Equal(t, 1, targetSize)
 	}
 }
 
@@ -170,31 +244,38 @@ func TestIncreaseSize(t *testing.T) {
 
 	orchestrationModes := [2]compute.OrchestrationMode{compute.Uniform, compute.Flexible}
 
-	expectedVMSSVMs := newTestVMSSVMList(3)
-	expectedVMs := newTestVMList(3)
-
 	for _, orchMode := range orchestrationModes {
+		expectedScaleSets := newTestVMSSList(3, testASG, orchMode)
+		expectedVMSSVMs := newTestVMSSVMList(3)
+		expectedVMs := newTestVMList(3)
+
+		// Include Edge Zone scenario here, testing scale from 3 to 5 and scale from zero cases.
+		expectedEdgeZoneScaleSets := newTestVMSSListForEdgeZones(3, "edgezone-vmss")
+		expectedEdgeZoneMinZeroScaleSets := newTestVMSSListForEdgeZones(0, "edgezone-minzero-vmss")
+		expectedScaleSets = append(expectedScaleSets, *expectedEdgeZoneScaleSets, *expectedEdgeZoneMinZeroScaleSets)
 
 		provider := newTestProvider(t)
-		expectedScaleSets := newTestVMSSList(3, "test-asg", "eastus", orchMode)
 
 		mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
 		mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
-		mockVMSSClient.EXPECT().CreateOrUpdateAsync(gomock.Any(), provider.azureManager.config.ResourceGroup, "test-asg", gomock.Any()).Return(nil, nil)
-		mockVMSSClient.EXPECT().WaitForCreateOrUpdateResult(gomock.Any(), gomock.Any(), provider.azureManager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
+		mockVMSSClient.EXPECT().CreateOrUpdateAsync(gomock.Any(), provider.azureManager.config.ResourceGroup,
+			testASG, gomock.Any()).Return(nil, nil)
+		mockVMSSClient.EXPECT().WaitForCreateOrUpdateResult(gomock.Any(), gomock.Any(),
+			provider.azureManager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
 		provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 
+		mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+		provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+		mockVMClient := mockvmclient.NewMockInterface(ctrl)
+		provider.azureManager.azClient.virtualMachinesClient = mockVMClient
+
 		if orchMode == compute.Uniform {
-
-			mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-			mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
-			provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+			mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup,
+				testASG, gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 		} else {
-
 			provider.azureManager.config.EnableVmssFlex = true
-			mockVMClient := mockvmclient.NewMockInterface(ctrl)
-			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), "test-asg").Return(expectedVMs, nil).AnyTimes()
-			provider.azureManager.azClient.virtualMachinesClient = mockVMClient
+			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), testASG).Return(expectedVMs, nil).AnyTimes()
 		}
 		err := provider.azureManager.forceRefresh()
 		assert.NoError(t, err)
@@ -205,97 +286,63 @@ func TestIncreaseSize(t *testing.T) {
 		assert.Equal(t, expectedErr, err)
 
 		registered := provider.azureManager.RegisterNodeGroup(
-			newTestScaleSet(provider.azureManager, "test-asg"))
+			newTestScaleSet(provider.azureManager, testASG))
 		assert.True(t, registered)
 		assert.Equal(t, len(provider.NodeGroups()), 1)
 
-		// current target size is 2.
+		// Current target size is 3.
 		targetSize, err := provider.NodeGroups()[0].TargetSize()
 		assert.NoError(t, err)
 		assert.Equal(t, 3, targetSize)
 
-		// increase 3 nodes.
+		// Increase 2 nodes.
 		err = provider.NodeGroups()[0].IncreaseSize(2)
 		assert.NoError(t, err)
 
-		// new target size should be 5.
+		// New target size should be 5.
 		targetSize, err = provider.NodeGroups()[0].TargetSize()
 		assert.NoError(t, err)
 		assert.Equal(t, 5, targetSize)
-	}
-}
 
-func TestIncreaseSizeOnVMProvisioningFailed(t *testing.T) {
-	testCases := map[string]struct {
-		expectInstanceRunning bool
-		isMissingInstanceView bool
-		statuses              []compute.InstanceViewStatus
-	}{
-		"out of resources when no power state exists": {},
-		"out of resources when VM is stopped": {
-			statuses: []compute.InstanceViewStatus{{Code: to.StringPtr(vmPowerStateStopped)}},
-		},
-		"out of resources when VM reports invalid power state": {
-			statuses: []compute.InstanceViewStatus{{Code: to.StringPtr("PowerState/invalid")}},
-		},
-		"instance running when power state is running": {
-			expectInstanceRunning: true,
-			statuses:              []compute.InstanceViewStatus{{Code: to.StringPtr(vmPowerStateRunning)}},
-		},
-		"instance running if instance view cannot be retrieved": {
-			expectInstanceRunning: true,
-			isMissingInstanceView: true,
-		},
-	}
-	for testName, testCase := range testCases {
-		t.Run(testName, func(t *testing.T) {
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
+		// Testing Edge Zone scenario. Scale from 3 to 5.
+		registeredForEdgeZone := provider.azureManager.RegisterNodeGroup(
+			newTestScaleSet(provider.azureManager, "edgezone-vmss"))
+		assert.True(t, registeredForEdgeZone)
+		assert.Equal(t, len(provider.NodeGroups()), 2)
 
-			manager := newTestAzureManager(t)
-			vmssName := "vmss-failed-upscale"
+		targetSizeForEdgeZone, err := provider.NodeGroups()[1].TargetSize()
+		assert.NoError(t, err)
+		assert.Equal(t, 3, targetSizeForEdgeZone)
 
-			expectedScaleSets := newTestVMSSList(3, "vmss-failed-upscale", "eastus", compute.Uniform)
-			expectedVMSSVMs := newTestVMSSVMList(3)
-			expectedVMSSVMs[2].ProvisioningState = to.StringPtr(string(compute.ProvisioningStateFailed))
-			if !testCase.isMissingInstanceView {
-				expectedVMSSVMs[2].InstanceView = &compute.VirtualMachineScaleSetVMInstanceView{Statuses: &testCase.statuses}
-			}
+		mockVMSSClient.EXPECT().CreateOrUpdateAsync(gomock.Any(), provider.azureManager.config.ResourceGroup,
+			"edgezone-vmss", gomock.Any()).Return(nil, nil)
+		err = provider.NodeGroups()[1].IncreaseSize(2)
+		assert.NoError(t, err)
 
-			mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
-			mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil)
-			mockVMSSClient.EXPECT().CreateOrUpdateAsync(gomock.Any(), manager.config.ResourceGroup, vmssName, gomock.Any()).Return(nil, nil)
-			mockVMSSClient.EXPECT().WaitForCreateOrUpdateResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
-			manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
-			mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-			mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "vmss-failed-upscale", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
-			manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
-			manager.explicitlyConfigured["vmss-failed-upscale"] = true
-			registered := manager.RegisterNodeGroup(newTestScaleSet(manager, vmssName))
-			assert.True(t, registered)
-			manager.Refresh()
+		targetSizeForEdgeZone, err = provider.NodeGroups()[1].TargetSize()
+		assert.NoError(t, err)
+		assert.Equal(t, 5, targetSizeForEdgeZone)
 
-			provider, err := BuildAzureCloudProvider(manager, nil)
-			assert.NoError(t, err)
+		// Testing Edge Zone scenario scaleFromZero case. Scale from 0 to 2.
+		registeredForEdgeZoneMinZero := provider.azureManager.RegisterNodeGroup(
+			newTestScaleSetMinSizeZero(provider.azureManager, "edgezone-minzero-vmss"))
+		assert.True(t, registeredForEdgeZoneMinZero)
+		assert.Equal(t, len(provider.NodeGroups()), 3)
 
-			scaleSet, ok := provider.NodeGroups()[0].(*ScaleSet)
-			assert.True(t, ok)
+		// Current target size is 0.
+		targetSizeForEdgeZoneMinZero, err := provider.NodeGroups()[2].TargetSize()
+		assert.NoError(t, err)
+		assert.Equal(t, 0, targetSizeForEdgeZoneMinZero)
 
-			// Increase size by one, but the new node fails provisioning
-			err = scaleSet.IncreaseSize(1)
-			assert.NoError(t, err)
+		mockVMSSClient.EXPECT().CreateOrUpdateAsync(gomock.Any(), provider.azureManager.config.ResourceGroup,
+			"edgezone-minzero-vmss", gomock.Any()).Return(nil, nil)
+		err = provider.NodeGroups()[2].IncreaseSize(2)
+		assert.NoError(t, err)
 
-			nodes, err := scaleSet.Nodes()
-			assert.NoError(t, err)
-
-			assert.Equal(t, 3, len(nodes))
-			if testCase.expectInstanceRunning {
-				assert.Equal(t, cloudprovider.InstanceRunning, nodes[2].Status.State)
-			} else {
-				assert.Equal(t, cloudprovider.InstanceCreating, nodes[2].Status.State)
-				assert.Equal(t, cloudprovider.OutOfResourcesErrorClass, nodes[2].Status.ErrorInfo.ErrorClass)
-			}
-		})
+		// New target size should be 2.
+		targetSizeForEdgeZoneMinZero, err = provider.NodeGroups()[2].TargetSize()
+		assert.NoError(t, err)
+		assert.Equal(t, 2, targetSizeForEdgeZoneMinZero)
 	}
 }
 
@@ -314,7 +361,7 @@ func TestIncreaseSizeOnVMSSUpdating(t *testing.T) {
 				Capacity: &vmssCapacity,
 			},
 			VirtualMachineScaleSetProperties: &compute.VirtualMachineScaleSetProperties{
-				ProvisioningState: to.StringPtr(string(compute.ProvisioningStateUpdating)),
+				ProvisioningState: to.StringPtr(string(compute.GalleryProvisioningStateUpdating)),
 				OrchestrationMode: compute.Uniform,
 			},
 		},
@@ -323,16 +370,21 @@ func TestIncreaseSizeOnVMSSUpdating(t *testing.T) {
 
 	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
 	mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil)
-	mockVMSSClient.EXPECT().CreateOrUpdateAsync(gomock.Any(), manager.config.ResourceGroup, vmssName, gomock.Any()).Return(nil, nil)
-	mockVMSSClient.EXPECT().WaitForCreateOrUpdateResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
+	mockVMSSClient.EXPECT().CreateOrUpdateAsync(gomock.Any(), manager.config.ResourceGroup, vmssName, gomock.Any()).Return(
+		nil, nil)
+	mockVMSSClient.EXPECT().WaitForCreateOrUpdateResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).Return(
+		&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
 	manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 	mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-	mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "vmss-updating", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+	mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "vmss-updating",
+		gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 	manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
 	manager.explicitlyConfigured["vmss-updating"] = true
 	registered := manager.RegisterNodeGroup(newTestScaleSet(manager, vmssName))
 	assert.True(t, registered)
-	manager.Refresh()
+
+	err := manager.Refresh()
+	assert.NoError(t, err)
 
 	provider, err := BuildAzureCloudProvider(manager, nil)
 	assert.NoError(t, err)
@@ -349,54 +401,55 @@ func TestBelongs(t *testing.T) {
 	defer ctrl.Finish()
 
 	orchestrationModes := [2]compute.OrchestrationMode{compute.Uniform, compute.Flexible}
+
 	expectedVMSSVMs := newTestVMSSVMList(3)
 	expectedVMs := newTestVMList(3)
 
 	for _, orchMode := range orchestrationModes {
-
-		expectedScaleSets := newTestVMSSList(3, "test-asg", "eastus", orchMode)
+		expectedScaleSets := newTestVMSSList(3, testASG, orchMode)
 		provider := newTestProvider(t)
 		mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
 		mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil)
 		provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 
+		mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+		provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+		mockVMClient := mockvmclient.NewMockInterface(ctrl)
+		provider.azureManager.azClient.virtualMachinesClient = mockVMClient
+
 		if orchMode == compute.Uniform {
-
-			mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-			mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
-			provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
-
+			mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup,
+				testASG, gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 		} else {
-
 			provider.azureManager.config.EnableVmssFlex = true
-			mockVMClient := mockvmclient.NewMockInterface(ctrl)
-			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), "test-asg").Return(expectedVMs, nil).AnyTimes()
-			provider.azureManager.azClient.virtualMachinesClient = mockVMClient
+			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), testASG).Return(expectedVMs, nil).AnyTimes()
 		}
 
 		registered := provider.azureManager.RegisterNodeGroup(
-			newTestScaleSet(provider.azureManager, "test-asg"))
+			newTestScaleSet(provider.azureManager, testASG))
 		assert.True(t, registered)
 
 		scaleSet, ok := provider.NodeGroups()[0].(*ScaleSet)
 		assert.True(t, ok)
-		provider.azureManager.explicitlyConfigured["test-asg"] = true
-		provider.azureManager.Refresh()
+		provider.azureManager.explicitlyConfigured[testASG] = true
+		err := provider.azureManager.Refresh()
+		assert.NoError(t, err)
 
 		invalidNode := &apiv1.Node{
 			Spec: apiv1.NodeSpec{
-				ProviderID: "azure:///subscriptions/test-subscrition-id/resourcegroups/invalid-asg/providers/microsoft.compute/virtualmachinescalesets/agents/virtualmachines/0",
+				ProviderID: azurePrefix + "/subscriptions/test-subscrition-id/resourcegroups/invalid-asg/providers/" +
+					"microsoft.compute/virtualmachinescalesets/agents/virtualmachines/0",
 			},
 		}
-		_, err := scaleSet.Belongs(invalidNode)
+		_, err = scaleSet.Belongs(invalidNode)
 		assert.Error(t, err)
 
-		validNode := newApiNode(orchMode, 0)
+		validNode := newAPINode(orchMode, 0)
 		belongs, err := scaleSet.Belongs(validNode)
 		assert.Equal(t, true, belongs)
 		assert.NoError(t, err)
 	}
-
 }
 
 func TestDeleteNodes(t *testing.T) {
@@ -404,33 +457,36 @@ func TestDeleteNodes(t *testing.T) {
 	defer ctrl.Finish()
 
 	vmssName := "test-asg"
+
 	var vmssCapacity int64 = 3
 	orchestrationModes := [2]compute.OrchestrationMode{compute.Uniform, compute.Flexible}
 	expectedVMSSVMs := newTestVMSSVMList(3)
 	expectedVMs := newTestVMList(3)
 
 	for _, orchMode := range orchestrationModes {
-
 		manager := newTestAzureManager(t)
-		expectedScaleSets := newTestVMSSList(vmssCapacity, vmssName, "eastus", orchMode)
+		expectedScaleSets := newTestVMSSList(vmssCapacity, vmssName, orchMode)
 
 		mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
 		mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).Times(2)
-		mockVMSSClient.EXPECT().DeleteInstancesAsync(gomock.Any(), manager.config.ResourceGroup, gomock.Any(), gomock.Any(), false).Return(nil, nil)
-		mockVMSSClient.EXPECT().WaitForDeleteInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
+		mockVMSSClient.EXPECT().DeleteInstancesAsync(gomock.Any(), manager.config.ResourceGroup, gomock.Any(),
+			gomock.Any(), false).Return(nil, nil)
+		mockVMSSClient.EXPECT().WaitForDeleteInstancesResult(gomock.Any(), gomock.Any(),
+			manager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
 		manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 
 		mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+		manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
 		mockVMClient := mockvmclient.NewMockInterface(ctrl)
+		manager.azClient.virtualMachinesClient = mockVMClient
 
 		if orchMode == compute.Uniform {
-			mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
-			manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+			mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup,
+				testASG, gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 		} else {
 			manager.config.EnableVmssFlex = true
-			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), "test-asg").Return(expectedVMs, nil).AnyTimes()
-			manager.azClient.virtualMachinesClient = mockVMClient
-
+			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), testASG).Return(expectedVMs, nil).AnyTimes()
 		}
 
 		err := manager.forceRefresh()
@@ -444,8 +500,8 @@ func TestDeleteNodes(t *testing.T) {
 		assert.NoError(t, err)
 
 		registered := manager.RegisterNodeGroup(
-			newTestScaleSet(manager, "test-asg"))
-		manager.explicitlyConfigured["test-asg"] = true
+			newTestScaleSet(manager, testASG))
+		manager.explicitlyConfigured[testASG] = true
 
 		assert.True(t, registered)
 		err = manager.forceRefresh()
@@ -460,25 +516,26 @@ func TestDeleteNodes(t *testing.T) {
 
 		// Perform the delete operation
 		nodesToDelete := []*apiv1.Node{
-			newApiNode(orchMode, 0),
-			newApiNode(orchMode, 2),
+			newAPINode(orchMode, 0),
+			newAPINode(orchMode, 2),
 		}
 		err = scaleSet.DeleteNodes(nodesToDelete)
 		assert.NoError(t, err)
 
 		// create scale set with vmss capacity 1
-		expectedScaleSets = newTestVMSSList(1, vmssName, "eastus", orchMode)
+		expectedScaleSets = newTestVMSSList(1, vmssName, orchMode)
 
 		mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
 
 		if orchMode == compute.Uniform {
-			expectedVMSSVMs[0].ProvisioningState = to.StringPtr(string(compute.ProvisioningStateDeleting))
-			expectedVMSSVMs[2].ProvisioningState = to.StringPtr(string(compute.ProvisioningStateDeleting))
-			mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+			expectedVMSSVMs[0].ProvisioningState = to.StringPtr(string(compute.GalleryProvisioningStateDeleting))
+			expectedVMSSVMs[2].ProvisioningState = to.StringPtr(string(compute.GalleryProvisioningStateDeleting))
+			mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, testASG,
+				gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 		} else {
-			expectedVMs[0].ProvisioningState = to.StringPtr(string(compute.ProvisioningStateDeleting))
-			expectedVMs[2].ProvisioningState = to.StringPtr(string(compute.ProvisioningStateDeleting))
-			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), "test-asg").Return(expectedVMs, nil).AnyTimes()
+			expectedVMs[0].ProvisioningState = to.StringPtr(string(compute.GalleryProvisioningStateDeleting))
+			expectedVMs[2].ProvisioningState = to.StringPtr(string(compute.GalleryProvisioningStateDeleting))
+			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), testASG).Return(expectedVMs, nil).AnyTimes()
 		}
 
 		err = manager.forceRefresh()
@@ -490,14 +547,19 @@ func TestDeleteNodes(t *testing.T) {
 		assert.Equal(t, 1, targetSize)
 
 		// Ensure that the status for the instances is Deleting
-		instance0, found := scaleSet.getInstanceByProviderID(nodesToDelete[0].Spec.ProviderID)
+		// lastInstanceRefresh is set to time.Now() to avoid resetting instanceCache.
+		scaleSet.lastInstanceRefresh = time.Now()
+		instance0, found, err := scaleSet.getInstanceByProviderID(nodesToDelete[0].Spec.ProviderID)
 		assert.True(t, found, true)
+		assert.NoError(t, err)
 		assert.Equal(t, instance0.Status.State, cloudprovider.InstanceDeleting)
 
-		instance2, found := scaleSet.getInstanceByProviderID(nodesToDelete[1].Spec.ProviderID)
+		// lastInstanceRefresh is set to time.Now() to avoid resetting instanceCache.
+		scaleSet.lastInstanceRefresh = time.Now()
+		instance2, found, err := scaleSet.getInstanceByProviderID(nodesToDelete[1].Spec.ProviderID)
 		assert.True(t, found, true)
+		assert.NoError(t, err)
 		assert.Equal(t, instance2.Status.State, cloudprovider.InstanceDeleting)
-
 	}
 }
 
@@ -507,32 +569,36 @@ func TestDeleteNodeUnregistered(t *testing.T) {
 
 	orchestrationModes := [2]compute.OrchestrationMode{compute.Uniform, compute.Flexible}
 
-	vmssName := "test-asg"
+	vmssName := testASG
+
 	var vmssCapacity int64 = 2
 	expectedVMSSVMs := newTestVMSSVMList(2)
 	expectedVMs := newTestVMList(2)
 
 	for _, orchMode := range orchestrationModes {
 		manager := newTestAzureManager(t)
-		expectedScaleSets := newTestVMSSList(vmssCapacity, vmssName, "eastus", orchMode)
+		expectedScaleSets := newTestVMSSList(vmssCapacity, vmssName, orchMode)
 
 		mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
 		mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).Times(2)
-		mockVMSSClient.EXPECT().DeleteInstancesAsync(gomock.Any(), manager.config.ResourceGroup, gomock.Any(), gomock.Any(), false).Return(nil, nil)
-		mockVMSSClient.EXPECT().WaitForDeleteInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
+		mockVMSSClient.EXPECT().DeleteInstancesAsync(gomock.Any(), manager.config.ResourceGroup, gomock.Any(),
+			gomock.Any(), false).Return(nil, nil)
+		mockVMSSClient.EXPECT().WaitForDeleteInstancesResult(gomock.Any(), gomock.Any(),
+			manager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
 		manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 
+		mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+		manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+		mockVMClient := mockvmclient.NewMockInterface(ctrl)
+		manager.azClient.virtualMachinesClient = mockVMClient
+
 		if orchMode == compute.Uniform {
-
-			mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-			mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
-			manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+			mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, testASG,
+				gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 		} else {
-
 			manager.config.EnableVmssFlex = true
-			mockVMClient := mockvmclient.NewMockInterface(ctrl)
-			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), "test-asg").Return(expectedVMs, nil).AnyTimes()
-			manager.azClient.virtualMachinesClient = mockVMClient
+			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), testASG).Return(expectedVMs, nil).AnyTimes()
 		}
 		err := manager.forceRefresh()
 		assert.NoError(t, err)
@@ -540,18 +606,20 @@ func TestDeleteNodeUnregistered(t *testing.T) {
 		resourceLimiter := cloudprovider.NewResourceLimiter(
 			map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
 			map[string]int64{cloudprovider.ResourceNameCores: 10, cloudprovider.ResourceNameMemory: 100000000})
+
 		provider, err := BuildAzureCloudProvider(manager, resourceLimiter)
 		assert.NoError(t, err)
 
 		registered := manager.RegisterNodeGroup(
-			newTestScaleSet(manager, "test-asg"))
-		manager.explicitlyConfigured["test-asg"] = true
+			newTestScaleSet(manager, testASG))
+		manager.explicitlyConfigured[testASG] = true
 		assert.True(t, registered)
 		err = manager.forceRefresh()
 		assert.NoError(t, err)
 
 		scaleSet, ok := provider.NodeGroups()[0].(*ScaleSet)
 		assert.True(t, ok)
+		scaleSet.instancesRefreshPeriod = defaultVmssInstancesRefreshPeriod
 
 		targetSize, err := scaleSet.TargetSize()
 		assert.NoError(t, err)
@@ -562,7 +630,7 @@ func TestDeleteNodeUnregistered(t *testing.T) {
 		annotations[cloudprovider.FakeNodeReasonAnnotation] = cloudprovider.FakeNodeUnregistered
 
 		nodesToDelete := []*apiv1.Node{
-			newApiNode(orchMode, 0),
+			newAPINode(orchMode, 0),
 		}
 		nodesToDelete[0].ObjectMeta.Annotations = annotations
 
@@ -575,18 +643,134 @@ func TestDeleteNodeUnregistered(t *testing.T) {
 		assert.Equal(t, 2, targetSize)
 
 		// Ensure that the status for the instances is Deleting
-		instance0, found := scaleSet.getInstanceByProviderID(nodesToDelete[0].Spec.ProviderID)
+		// lastInstanceRefresh is set to time.Now() to avoid resetting instanceCache.
+		scaleSet.lastInstanceRefresh = time.Now()
+		instance0, found, err := scaleSet.getInstanceByProviderID(nodesToDelete[0].Spec.ProviderID)
 		assert.True(t, found, true)
-		assert.Equal(t, instance0.Status.State, cloudprovider.InstanceDeleting)
+		assert.NoError(t, err)
+		assert.Equal(t, cloudprovider.InstanceDeleting, instance0.Status.State)
 	}
+}
 
+func TestDeleteInstancesWithForceDeleteEnabled(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	manager := newTestAzureManager(t)
+	// enabling forceDelete
+	manager.config.EnableForceDelete = true
+
+	vmssName := testASG
+	var vmssCapacity int64 = 3
+
+	expectedScaleSets := []compute.VirtualMachineScaleSet{
+		{
+			Name: &vmssName,
+			Sku: &compute.Sku{
+				Capacity: &vmssCapacity,
+			},
+			VirtualMachineScaleSetProperties: &compute.VirtualMachineScaleSetProperties{
+				OrchestrationMode: compute.Uniform,
+			},
+		},
+	}
+	expectedVMSSVMs := newTestVMSSVMList(3)
+
+	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
+	mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).Times(2)
+	mockVMSSClient.EXPECT().DeleteInstancesAsync(gomock.Any(), manager.config.ResourceGroup, gomock.Any(), gomock.Any(),
+		true).Return(nil, nil)
+	mockVMSSClient.EXPECT().WaitForDeleteInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).Return(
+		&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
+	manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+	mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+	mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, testASG,
+		gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+	manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+	err := manager.forceRefresh()
+	assert.NoError(t, err)
+
+	resourceLimiter := cloudprovider.NewResourceLimiter(
+		map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
+		map[string]int64{cloudprovider.ResourceNameCores: 10, cloudprovider.ResourceNameMemory: 100000000})
+	provider, err := BuildAzureCloudProvider(manager, resourceLimiter)
+	assert.NoError(t, err)
+
+	registered := manager.RegisterNodeGroup(
+		newTestScaleSet(manager, testASG))
+	manager.explicitlyConfigured[testASG] = true
+	assert.True(t, registered)
+	err = manager.forceRefresh()
+	assert.NoError(t, err)
+
+	scaleSet, ok := provider.NodeGroups()[0].(*ScaleSet)
+	assert.True(t, ok)
+
+	targetSize, err := scaleSet.TargetSize()
+	assert.NoError(t, err)
+	assert.Equal(t, 3, targetSize)
+
+	// Perform the delete operation
+	nodesToDelete := []*apiv1.Node{
+		{
+			Spec: apiv1.NodeSpec{
+				ProviderID: azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 0),
+			},
+		},
+		{
+			Spec: apiv1.NodeSpec{
+				ProviderID: azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 2),
+			},
+		},
+	}
+	err = scaleSet.DeleteNodes(nodesToDelete)
+	assert.NoError(t, err)
+	vmssCapacity = 1
+	expectedScaleSets = []compute.VirtualMachineScaleSet{
+		{
+			Name: &vmssName,
+			Sku: &compute.Sku{
+				Capacity: &vmssCapacity,
+			},
+			VirtualMachineScaleSetProperties: &compute.VirtualMachineScaleSetProperties{
+				OrchestrationMode: compute.Uniform,
+			},
+		},
+	}
+	mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
+	expectedVMSSVMs[0].ProvisioningState = to.StringPtr(string(compute.GalleryProvisioningStateDeleting))
+	expectedVMSSVMs[2].ProvisioningState = to.StringPtr(string(compute.GalleryProvisioningStateDeleting))
+	mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, testASG,
+		gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+	err = manager.forceRefresh()
+	assert.NoError(t, err)
+
+	// Ensure the the cached size has been proactively decremented by 2
+	targetSize, err = scaleSet.TargetSize()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, targetSize)
+
+	// Ensure that the status for the instances is Deleting
+	// lastInstanceRefresh is set to time.Now() to avoid resetting instanceCache.
+	scaleSet.lastInstanceRefresh = time.Now()
+	instance0, found, err := scaleSet.getInstanceByProviderID(azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 0))
+	assert.True(t, found, true)
+	assert.NoError(t, err)
+	assert.Equal(t, instance0.Status.State, cloudprovider.InstanceDeleting)
+
+	// lastInstanceRefresh is set to time.Now() to avoid resetting instanceCache.
+	scaleSet.lastInstanceRefresh = time.Now()
+	instance2, found, err := scaleSet.getInstanceByProviderID(azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 2))
+	assert.True(t, found, true)
+	assert.NoError(t, err)
+	assert.Equal(t, instance2.Status.State, cloudprovider.InstanceDeleting)
 }
 
 func TestDeleteNoConflictRequest(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	vmssName := "test-asg"
+	vmssName := testASG
+	nodeName := "test-vmssVM"
 	var vmssCapacity int64 = 3
 
 	manager := newTestAzureManager(t)
@@ -599,6 +783,7 @@ func TestDeleteNoConflictRequest(t *testing.T) {
 				VMID:              to.StringPtr("123E4567-E89B-12D3-A456-426655440000"),
 				ProvisioningState: to.StringPtr("Deleting"),
 			},
+			Name: to.StringPtr(nodeName),
 		},
 	}
 	expectedScaleSets := []compute.VirtualMachineScaleSet{
@@ -617,7 +802,8 @@ func TestDeleteNoConflictRequest(t *testing.T) {
 	mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
 	manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 	mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-	mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+	mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, testASG,
+		gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 	manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
 
 	resourceLimiter := cloudprovider.NewResourceLimiter(
@@ -626,14 +812,19 @@ func TestDeleteNoConflictRequest(t *testing.T) {
 	provider, err := BuildAzureCloudProvider(manager, resourceLimiter)
 	assert.NoError(t, err)
 
-	registered := manager.RegisterNodeGroup(newTestScaleSet(manager, "test-asg"))
-	manager.explicitlyConfigured["test-asg"] = true
+	registered := manager.RegisterNodeGroup(newTestScaleSet(manager, testASG))
+	manager.explicitlyConfigured[testASG] = true
 	assert.True(t, registered)
-	manager.Refresh()
+
+	err = manager.Refresh()
+	assert.NoError(t, err)
 
 	node := &apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeName,
+		},
 		Spec: apiv1.NodeSpec{
-			ProviderID: "azure://" + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 0),
+			ProviderID: azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 0),
 		},
 	}
 
@@ -641,15 +832,19 @@ func TestDeleteNoConflictRequest(t *testing.T) {
 	assert.True(t, ok)
 
 	err = scaleSet.DeleteNodes([]*apiv1.Node{node})
+	expectedErr := fmt.Errorf("test-vmssVM doesn't belong to a known scale set")
+	// Node object found will have provisioning state as "deleting", hence above error is expected.
+	// For delete, we expect node object which is identical to what we provide (here, provisioning != "deleting")
+	assert.Equal(t, expectedErr, err)
 }
 
 func TestId(t *testing.T) {
 	provider := newTestProvider(t)
 	registered := provider.azureManager.RegisterNodeGroup(
-		newTestScaleSet(provider.azureManager, "test-asg"))
+		newTestScaleSet(provider.azureManager, testASG))
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
-	assert.Equal(t, provider.NodeGroups()[0].Id(), "test-asg")
+	assert.Equal(t, provider.NodeGroups()[0].Id(), testASG)
 }
 
 func TestDebug(t *testing.T) {
@@ -671,43 +866,45 @@ func TestScaleSetNodes(t *testing.T) {
 	expectedVMs := newTestVMList(3)
 
 	for _, orchMode := range orchestrationModes {
-
-		expectedScaleSets := newTestVMSSList(3, "test-asg", "eastus", orchMode)
+		expectedScaleSets := newTestVMSSList(3, testASG, orchMode)
 		provider := newTestProvider(t)
 
 		mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
 		mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
 		provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 
+		mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+		provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+		mockVMClient := mockvmclient.NewMockInterface(ctrl)
+		provider.azureManager.azClient.virtualMachinesClient = mockVMClient
+
 		if orchMode == compute.Uniform {
-
-			mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-			mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
-			provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
-
+			mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup,
+				testASG, gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
 		} else {
 			provider.azureManager.config.EnableVmssFlex = true
-			mockVMClient := mockvmclient.NewMockInterface(ctrl)
-			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), "test-asg").Return(expectedVMs, nil).AnyTimes()
-			provider.azureManager.azClient.virtualMachinesClient = mockVMClient
+			mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), testASG).Return(expectedVMs, nil).AnyTimes()
 		}
 
 		registered := provider.azureManager.RegisterNodeGroup(
-			newTestScaleSet(provider.azureManager, "test-asg"))
-		provider.azureManager.explicitlyConfigured["test-asg"] = true
-		provider.azureManager.Refresh()
+			newTestScaleSet(provider.azureManager, testASG))
+		provider.azureManager.explicitlyConfigured[testASG] = true
+		err := provider.azureManager.Refresh()
+		assert.NoError(t, err)
 		assert.True(t, registered)
 		assert.Equal(t, len(provider.NodeGroups()), 1)
 
-		node := newApiNode(orchMode, 0)
+		node := newAPINode(orchMode, 0)
 		group, err := provider.NodeGroupForNode(node)
 		assert.NoError(t, err)
 		assert.NotNil(t, group, "Group should not be nil")
-		assert.Equal(t, group.Id(), "test-asg")
+		assert.Equal(t, group.Id(), testASG)
 		assert.Equal(t, group.MinSize(), 1)
 		assert.Equal(t, group.MaxSize(), 5)
 
 		ss, ok := group.(*ScaleSet)
+		ss.lastInstanceRefresh = time.Now()
 		assert.True(t, ok)
 		assert.NotNil(t, ss)
 		instances, err := group.Nodes()
@@ -715,41 +912,38 @@ func TestScaleSetNodes(t *testing.T) {
 		assert.Equal(t, len(instances), 3)
 
 		if orchMode == compute.Uniform {
-
-			assert.Equal(t, instances[0], cloudprovider.Instance{Id: "azure://" + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 0)})
-			assert.Equal(t, instances[1], cloudprovider.Instance{Id: "azure://" + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 1)})
-			assert.Equal(t, instances[2], cloudprovider.Instance{Id: "azure://" + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 2)})
+			assert.Equal(t, instances[0], cloudprovider.Instance{Id: azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 0)})
+			assert.Equal(t, instances[1], cloudprovider.Instance{Id: azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 1)})
+			assert.Equal(t, instances[2], cloudprovider.Instance{Id: azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 2)})
 		} else {
-
-			assert.Equal(t, instances[0], cloudprovider.Instance{Id: "azure://" + fmt.Sprintf(fakeVirtualMachineVMID, 0)})
-			assert.Equal(t, instances[1], cloudprovider.Instance{Id: "azure://" + fmt.Sprintf(fakeVirtualMachineVMID, 1)})
-			assert.Equal(t, instances[2], cloudprovider.Instance{Id: "azure://" + fmt.Sprintf(fakeVirtualMachineVMID, 2)})
+			assert.Equal(t, instances[0], cloudprovider.Instance{Id: azurePrefix + fmt.Sprintf(fakeVirtualMachineVMID, 0)})
+			assert.Equal(t, instances[1], cloudprovider.Instance{Id: azurePrefix + fmt.Sprintf(fakeVirtualMachineVMID, 1)})
+			assert.Equal(t, instances[2], cloudprovider.Instance{Id: azurePrefix + fmt.Sprintf(fakeVirtualMachineVMID, 2)})
 		}
 	}
-
 }
 
 func TestEnableVmssFlexFlag(t *testing.T) {
-
 	// flag set to false
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	expectedVMs := newTestVMList(3)
-	expectedScaleSets := newTestVMSSList(3, "test-asg", "eastus", compute.Flexible)
+	expectedScaleSets := newTestVMSSList(3, testASG, compute.Flexible)
 
 	provider := newTestProvider(t)
 	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
 	mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
 	provider.azureManager.config.EnableVmssFlex = false
 	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
 	mockVMClient := mockvmclient.NewMockInterface(ctrl)
-	mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), "test-asg").Return(expectedVMs, nil).AnyTimes()
+	mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), testASG).Return(expectedVMs, nil).AnyTimes()
 	provider.azureManager.azClient.virtualMachinesClient = mockVMClient
 
 	provider.azureManager.RegisterNodeGroup(
-		newTestScaleSet(provider.azureManager, "test-asg"))
-	provider.azureManager.explicitlyConfigured["test-asg"] = true
+		newTestScaleSet(provider.azureManager, testASG))
+	provider.azureManager.explicitlyConfigured[testASG] = true
 	err := provider.azureManager.Refresh()
 	assert.Error(t, err, "vmss - \"test-asg\" with Flexible orchestration detected but 'enbaleVmssFlex' feature flag is turned off")
 
@@ -763,7 +957,7 @@ func TestTemplateNodeInfo(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	expectedScaleSets := newTestVMSSList(3, "test-asg", "eastus", compute.Uniform)
+	expectedScaleSets := newTestVMSSList(3, testASG, compute.Uniform)
 
 	provider := newTestProvider(t)
 	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
@@ -773,25 +967,38 @@ func TestTemplateNodeInfo(t *testing.T) {
 	assert.NoError(t, err)
 
 	registered := provider.azureManager.RegisterNodeGroup(
-		newTestScaleSet(provider.azureManager, "test-asg"))
+		newTestScaleSet(provider.azureManager, testASG))
 	assert.True(t, registered)
 	assert.Equal(t, len(provider.NodeGroups()), 1)
 
 	asg := ScaleSet{
-		manager:                   provider.azureManager,
-		minSize:                   1,
-		maxSize:                   5,
-		enableDynamicInstanceList: true,
+		manager: provider.azureManager,
+		minSize: 1,
+		maxSize: 5,
 	}
-	asg.Name = "test-asg"
+	asg.Name = testASG
 
-	nodeInfo, err := asg.TemplateNodeInfo()
-	assert.NoError(t, err)
-	assert.NotNil(t, nodeInfo)
-	assert.NotEmpty(t, nodeInfo.Pods)
+	// The dynamic SKU list ("cache") in the test provider is empty
+	// (initialized with cfg.EnableDynamicInstanceList = false).
+	assert.False(t, provider.azureManager.azureCache.HasVMSKUs())
 
+	t.Run("Checking fallback to static because dynamic list is empty", func(t *testing.T) {
+		asg.enableDynamicInstanceList = true
+
+		nodeInfo, err := asg.TemplateNodeInfo()
+		assert.NoError(t, err)
+		assert.NotNil(t, nodeInfo)
+		assert.NotEmpty(t, nodeInfo.Pods)
+	})
+
+	// Properly testing dynamic SKU list through skewer is not possible,
+	// because there are no Resource API mocks included yet.
+	// Instead, the rest of the (consumer side) tests here
+	// override GetVMSSTypeDynamically and GetVMSSTypeStatically functions.
 	t.Run("Checking dynamic workflow", func(t *testing.T) {
-		GetVMSSTypeDynamically = func(template compute.VirtualMachineScaleSet, azCache *azureCache) (InstanceType, error) {
+		asg.enableDynamicInstanceList = true
+
+		GetVMSSTypeDynamically = func(template *compute.VirtualMachineScaleSet, azCache *azureCache) (InstanceType, error) {
 			vmssType := InstanceType{}
 			vmssType.VCPU = 1
 			vmssType.GPU = 2
@@ -805,10 +1012,12 @@ func TestTemplateNodeInfo(t *testing.T) {
 	})
 
 	t.Run("Checking static workflow if dynamic fails", func(t *testing.T) {
-		GetVMSSTypeDynamically = func(template compute.VirtualMachineScaleSet, azCache *azureCache) (InstanceType, error) {
+		asg.enableDynamicInstanceList = true
+
+		GetVMSSTypeDynamically = func(template *compute.VirtualMachineScaleSet, azCache *azureCache) (InstanceType, error) {
 			return InstanceType{}, fmt.Errorf("dynamic error exists")
 		}
-		GetVMSSTypeStatically = func(template compute.VirtualMachineScaleSet) (*InstanceType, error) {
+		GetVMSSTypeStatically = func(template *compute.VirtualMachineScaleSet) (*InstanceType, error) {
 			vmssType := InstanceType{}
 			vmssType.VCPU = 1
 			vmssType.GPU = 2
@@ -822,10 +1031,12 @@ func TestTemplateNodeInfo(t *testing.T) {
 	})
 
 	t.Run("Fails to find vmss instance information using static and dynamic workflow, instance not supported", func(t *testing.T) {
-		GetVMSSTypeDynamically = func(template compute.VirtualMachineScaleSet, azCache *azureCache) (InstanceType, error) {
+		asg.enableDynamicInstanceList = true
+
+		GetVMSSTypeDynamically = func(template *compute.VirtualMachineScaleSet, azCache *azureCache) (InstanceType, error) {
 			return InstanceType{}, fmt.Errorf("dynamic error exists")
 		}
-		GetVMSSTypeStatically = func(template compute.VirtualMachineScaleSet) (*InstanceType, error) {
+		GetVMSSTypeStatically = func(template *compute.VirtualMachineScaleSet) (*InstanceType, error) {
 			return &InstanceType{}, fmt.Errorf("static error exists")
 		}
 		nodeInfo, err := asg.TemplateNodeInfo()
@@ -833,11 +1044,12 @@ func TestTemplateNodeInfo(t *testing.T) {
 		assert.Equal(t, err, fmt.Errorf("static error exists"))
 	})
 
-	// Note: This test should be removed once enableDynamicInstanceList toggled is removed and the feature is completely enabled.
-	t.Run("Checking static workflow if enableDynamicInstanceList Toggle is false", func(t *testing.T) {
+	// Note: static-only workflow tests can be removed once support for dynamic is always on
+	t.Run("Checking static-only workflow", func(t *testing.T) {
 		asg.enableDynamicInstanceList = false
+		asg.manager.azureCache.skus = nil
 
-		GetVMSSTypeStatically = func(template compute.VirtualMachineScaleSet) (*InstanceType, error) {
+		GetVMSSTypeStatically = func(template *compute.VirtualMachineScaleSet) (*InstanceType, error) {
 			vmssType := InstanceType{}
 			vmssType.VCPU = 1
 			vmssType.GPU = 2
@@ -848,5 +1060,116 @@ func TestTemplateNodeInfo(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, nodeInfo)
 		assert.NotEmpty(t, nodeInfo.Pods)
+	})
+
+	t.Run("Checking static-only workflow with built-in SKU list", func(t *testing.T) {
+		asg.enableDynamicInstanceList = false
+
+		nodeInfo, err := asg.TemplateNodeInfo()
+		assert.NoError(t, err)
+		assert.NotNil(t, nodeInfo)
+		assert.NotEmpty(t, nodeInfo.Pods)
+	})
+}
+func TestCseErrors(t *testing.T) {
+	errorMessage := to.StringPtr("Error Message Test")
+	vmssVMs := compute.VirtualMachineScaleSetVM{
+		Name:       to.StringPtr("vmTest"),
+		ID:         to.StringPtr(fakeVirtualMachineScaleSetVMID),
+		InstanceID: to.StringPtr("0"),
+		VirtualMachineScaleSetVMProperties: &compute.VirtualMachineScaleSetVMProperties{
+			VMID:              to.StringPtr("123E4567-E89B-12D3-A456-426655440000"),
+			ProvisioningState: to.StringPtr("Succeeded"),
+			InstanceView: &compute.VirtualMachineScaleSetVMInstanceView{
+				Extensions: &[]compute.VirtualMachineExtensionInstanceView{
+					{
+						Statuses: &[]compute.InstanceViewStatus{
+							{
+								Level:   "Error",
+								Message: errorMessage,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	manager := newTestAzureManager(t)
+	resourceLimiter := cloudprovider.NewResourceLimiter(
+		map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
+		map[string]int64{cloudprovider.ResourceNameCores: 10, cloudprovider.ResourceNameMemory: 100000000})
+	provider, _ := BuildAzureCloudProvider(manager, resourceLimiter)
+	manager.RegisterNodeGroup(
+		newTestScaleSet(manager, testASG))
+	manager.explicitlyConfigured[testASG] = true
+	scaleSet, _ := provider.NodeGroups()[0].(*ScaleSet)
+
+	t.Run("getCSEErrorMessages test with CSE error in VM extensions", func(t *testing.T) {
+		expectedCSEWErrorMessage := "Error Message Test"
+		(*vmssVMs.InstanceView.Extensions)[0].Name = to.StringPtr(vmssCSEExtensionName)
+		actualCSEErrorMessage, actualCSEFailureBool := scaleSet.cseErrors(vmssVMs.InstanceView.Extensions)
+		assert.True(t, actualCSEFailureBool)
+		assert.Equal(t, []string{expectedCSEWErrorMessage}, actualCSEErrorMessage)
+	})
+	t.Run("getCSEErrorMessages test with no CSE error in VM extensions", func(t *testing.T) {
+		(*vmssVMs.InstanceView.Extensions)[0].Name = to.StringPtr("notCSEExtension")
+		actualCSEErrorMessage, actualCSEFailureBool := scaleSet.cseErrors(vmssVMs.InstanceView.Extensions)
+		assert.False(t, actualCSEFailureBool)
+		assert.Equal(t, []string(nil), actualCSEErrorMessage)
+	})
+}
+
+func TestWaitForStartInstances(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	provider := newTestProvider(t)
+	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
+	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+	expectedVMSSVMs := newTestVMSSVMList(3)
+	var instances []cloudprovider.Instance
+	for _, vm := range expectedVMSSVMs {
+		instances = append(instances, cloudprovider.Instance{
+			Id: azurePrefix + *vm.ID,
+			Status: &cloudprovider.InstanceStatus{
+				State: cloudprovider.InstanceRunning,
+			},
+		})
+	}
+
+	asg := &ScaleSet{
+		manager:         provider.azureManager,
+		minSize:         1,
+		maxSize:         5,
+		InstanceCache:   InstanceCache{instanceCache: instances},
+		scaleDownPolicy: cloudprovider.Deallocate,
+	}
+	asg.Name = testASG
+	resp := &http.Response{StatusCode: 200}
+
+	t.Run("when vmssVM client returns no error on StartInstancesAsync()", func(t *testing.T) {
+		requiredInstanceIDs := &compute.VirtualMachineScaleSetVMInstanceRequiredIDs{}
+		mockVMSSClient.EXPECT().WaitForStartInstancesResult(gomock.Any(), gomock.Any(),
+			asg.manager.config.ResourceGroup).Return(resp, nil).Times(1)
+		asg.waitForStartInstances(nil, requiredInstanceIDs)
+		for _, vm := range asg.instanceCache {
+			assert.Equal(t, vm.Status.State, cloudprovider.InstanceRunning)
+		}
+	})
+
+	t.Run("when vmssVM client returns error on StartInstancesAsync() with previously deallocated instances", func(t *testing.T) {
+		mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+		provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+		mockVMSSClient.EXPECT().WaitForStartInstancesResult(gomock.Any(), gomock.Any(),
+			asg.manager.config.ResourceGroup).Return(resp, fmt.Errorf("some error message")).Times(1)
+
+		asg.waitForStartInstances(nil, &compute.VirtualMachineScaleSetVMInstanceRequiredIDs{})
+
+		// On failure with WaitForStartInstancesResult(), it invalidates the instanceCache.
+		lastInstanceCacheRefreshTime := asg.lastInstanceRefresh
+		assert.Lessf(t, lastInstanceCacheRefreshTime, time.Now(), "instanceCache should be invalidated")
 	})
 }

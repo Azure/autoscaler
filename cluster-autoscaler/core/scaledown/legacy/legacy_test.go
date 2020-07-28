@@ -142,7 +142,9 @@ func TestFindUnneededNodes(t *testing.T) {
 		NodeGroupDefaults: config.NodeGroupAutoscalingOptions{
 			ScaleDownUtilizationThreshold: 0.35,
 		},
-		UnremovableNodeRecheckTimeout: 5 * time.Minute,
+		UnremovableNodeRecheckTimeout:      5 * time.Minute,
+		MaxCloudProviderNodeDeletionTime:   5 * time.Minute,
+		MaxKubernetesEmptyNodeDeletionTime: 3 * time.Minute,
 	}
 	context, err := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, registry, provider, nil, nil)
 	assert.NoError(t, err)

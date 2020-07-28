@@ -121,11 +121,20 @@ type AutoscalingOptions struct {
 	GRPCExpanderCert string
 	// GRPCExpanderURL is the url of the gRPC server when using the gRPC expander
 	GRPCExpanderURL string
+	// IgnoreDaemonSetsUtilization is whether CA will ignore DaemonSet pods when calculating resource utilization for scaling down
+	IgnoreDaemonSetsUtilization bool
 	// IgnoreMirrorPodsUtilization is whether CA will ignore Mirror pods when calculating resource utilization for scaling down
 	IgnoreMirrorPodsUtilization bool
 	// MaxGracefulTerminationSec is maximum number of seconds scale down waits for pods to terminate before
 	// removing the node from cloud provider.
 	MaxGracefulTerminationSec int
+	// MaxCloudProviderNodeDeletionTime is the maximum time needed by cloud provider to delete a node
+	MaxCloudProviderNodeDeletionTime time.Duration
+	// MaxKubernetesEmptyNodeDeletionTime is the maximum time needed by Kubernetes to delete an empty node
+	MaxKubernetesEmptyNodeDeletionTime time.Duration
+	//  Maximum time CA waits for node to be provisioned
+	//  MaxNodeProvisionTime defines maximum time CA waits for node to be provisioned
+	MaxNodeProvisionTime time.Duration
 	// MaxTotalUnreadyPercentage is the maximum percentage of unready nodes after which CA halts operations
 	MaxTotalUnreadyPercentage float64
 	// OkTotalUnreadyCount is the number of allowed unready nodes, irrespective of max-total-unready-percentage
@@ -274,4 +283,12 @@ type AutoscalingOptions struct {
 	ParallelDrain bool
 	// NodeGroupSetRatio is a collection of ratios used by CA used to make scaling decisions.
 	NodeGroupSetRatios NodeGroupDifferenceRatios
+	// EnableForceDelete uses force deletion on the Azure API to remove instances
+	EnableForceDelete bool
+	// EnableDynamicInstanceList enables dynamic instance workflow for vmss check
+	EnableDynamicInstanceList bool
+	// EnableDetailedCSEMessage enables emitting error messages in CSE error body
+	EnableDetailedCSEMessage bool
+	// GetVmssSizeRefreshPeriod is the TTL for GET VMSS cache
+	GetVmssSizeRefreshPeriod time.Duration
 }

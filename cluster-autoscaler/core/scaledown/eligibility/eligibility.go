@@ -27,9 +27,10 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/utilization"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/klogx"
+	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/taints"
 
 	apiv1 "k8s.io/api/core/v1"
-	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	klog "k8s.io/klog/v2"
 	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
@@ -73,6 +74,17 @@ func (c *Checker) FilterOutUnremovable(context *context.AutoscalingContext, scal
 	utilLogsQuota := klogx.NewLoggingQuota(20)
 
 	for _, node := range scaleDownCandidates {
+		nodeGroup, err := context.CloudProvider.NodeGroupForNode(node)
+		if err != nil {
+			klog.Errorf("Error while checking node group for %s: %v", node.Name, err)
+			continue
+		}
+		// Skip calculating unreadiness for already deallocated nodes. This is because CA attempts to delete unready unneeded nodes
+		if shouldSkipDeletionWhenDeallocated(nodeGroup, node) {
+			klog.V(3).Infof("Skipping %s from scale-down considerations as the nodegroup has Deallocate policy and node is currently deallocated", node.Name)
+			continue
+		}
+
 		nodeInfo, err := context.ClusterSnapshot.NodeInfos().Get(node.Name)
 		if err != nil {
 			klog.Errorf("Can't retrieve scale-down candidate %s from snapshot, err: %v", node.Name, err)
@@ -106,10 +118,22 @@ func (c *Checker) FilterOutUnremovable(context *context.AutoscalingContext, scal
 	return currentlyUnneededNodeNames, utilizationMap, ineligible
 }
 
+// shouldSkipDeletionWhenDeallocated returns true if we should skip the unneeded node calculation for this node
+// This is only done for Deallocation mode to avoid unnecessary candidate consideration/Deallocating those since
+// they remain in NotReady state
+func shouldSkipDeletionWhenDeallocated(nodeGroup cloudprovider.NodeGroup, node *apiv1.Node) bool {
+	policyNg, ok := nodeGroup.(cloudprovider.PolicyNodeGroup)
+	if ok && policyNg.ScaleDownPolicy() != cloudprovider.Deallocate {
+		return false
+	}
+	ready, _, _ := kube_util.GetReadinessState(node)
+	return taints.HasShutdownTaint(node) && !ready
+}
+
 func (c *Checker) unremovableReasonAndNodeUtilization(context *context.AutoscalingContext, timestamp time.Time, nodeInfo *schedulerframework.NodeInfo, utilLogsQuota *klogx.Quota) (simulator.UnremovableReason, *utilization.Info) {
 	node := nodeInfo.Node()
 
-	if actuation.IsNodeBeingDeleted(node, timestamp) {
+	if actuation.IsNodeBeingDeleted(context, node, timestamp) {
 		klog.V(1).Infof("Skipping %s from delete consideration - the node is currently being deleted", node.Name)
 		return simulator.CurrentlyBeingDeleted, nil
 	}

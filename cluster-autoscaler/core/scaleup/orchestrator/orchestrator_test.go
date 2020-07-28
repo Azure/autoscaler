@@ -1652,7 +1652,7 @@ func TestAuthErrorHandling(t *testing.T) {
 		"failed to increase node group size: auth error",
 	)
 	assert.Equal(t, expected, results.ScaleUpError)
-	assertLegacyRegistryEntry(t, "cluster_autoscaler_failed_scale_ups_total{reason=\"authError\"} 1")
+	assertLegacyRegistryEntry(t, "cluster_autoscaler_failed_scale_ups_total{reason=\"\",type=\"authError\"} 1")
 }
 
 func assertLegacyRegistryEntry(t *testing.T, entry string) {

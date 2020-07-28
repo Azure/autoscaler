@@ -26,13 +26,18 @@ import (
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/azure"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
+	kretry "k8s.io/client-go/util/retry"
 	klog "k8s.io/klog/v2"
+	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
 
 const (
+	azurePrefix = "azure://"
+
 	vmTypeVMSS     = "vmss"
 	vmTypeStandard = "standard"
 	vmTypeAKS      = "aks"
@@ -46,16 +51,28 @@ const (
 type AzureManager struct {
 	config   *Config
 	azClient *azClient
-	env      azure.Environment
+	env      *azure.Environment
 
-	azureCache           *azureCache
-	lastRefresh          time.Time
+	// azureCache is used for caching Azure resources.
+	// It keeps track of nodegroups and instances
+	// (and of which nodegroup instances belong to)
+	azureCache *azureCache
+	// lastRefresh is the time azureCache was last refreshed.
+	// Together with azureCache.refreshInterval is it used to decide whether
+	// it is time to refresh the cache from Azure resources.
+	//
+	// Cache invalidation can also be requested via invalidateCache()
+	// (used by both AzureManager and ScaleSet), which manipulates
+	// lastRefresh to force refresh on the next check.
+	lastRefresh time.Time
+
 	autoDiscoverySpecs   []labelAutoDiscoveryConfig
 	explicitlyConfigured map[string]bool
 }
 
 // createAzureManagerInternal allows for a custom azClient to be passed in by tests.
-func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovider.NodeGroupDiscoveryOptions, azClient *azClient) (*AzureManager, error) {
+func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovider.NodeGroupDiscoveryOptions,
+	autoScalingOpts *config.AutoscalingOptions, azClient *azClient) (*AzureManager, error) {
 	cfg, err := BuildAzureConfig(configReader)
 	if err != nil {
 		return nil, err
@@ -69,6 +86,15 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 			return nil, err
 		}
 	}
+	if autoScalingOpts == nil {
+		return nil, fmt.Errorf("autoScalingOpts cannot be nil while creating azure manager")
+	}
+	cfg.EnableForceDelete = autoScalingOpts.EnableForceDelete
+	cfg.GetVmssSizeRefreshPeriod = autoScalingOpts.GetVmssSizeRefreshPeriod
+	cfg.EnableDynamicInstanceList = autoScalingOpts.EnableDynamicInstanceList
+	cfg.EnableDetailedCSEMessage = autoScalingOpts.EnableDetailedCSEMessage
+
+	klog.Infof("Autoscaling options: %+v", autoScalingOpts)
 
 	klog.Infof("Starting azure manager with subscription ID %q", cfg.SubscriptionID)
 
@@ -82,7 +108,7 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 	// Create azure manager.
 	manager := &AzureManager{
 		config:               cfg,
-		env:                  env,
+		env:                  &env,
 		azClient:             azClient,
 		explicitlyConfigured: make(map[string]bool),
 	}
@@ -91,11 +117,13 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 	if cfg.VmssCacheTTL != 0 {
 		cacheTTL = time.Duration(cfg.VmssCacheTTL) * time.Second
 	}
-	cache, err := newAzureCache(azClient, cacheTTL, cfg.ResourceGroup, cfg.VMType, cfg.EnableDynamicInstanceList, cfg.Location)
-	if err != nil {
-		return nil, err
-	}
+	cache := newAzureCache(azClient, cacheTTL, cfg)
 	manager.azureCache = cache
+
+	if !manager.azureCache.HasVMSKUs() {
+		klog.Warning("No VM SKU info loaded, using only static SKU list")
+		cfg.EnableDynamicInstanceList = false
+	}
 
 	specs, err := ParseLabelAutoDiscoverySpecs(discoveryOpts)
 	if err != nil {
@@ -107,16 +135,32 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 		return nil, err
 	}
 
+	retryBackoff := wait.Backoff{
+		Duration: 2 * time.Minute,
+		Factor:   1.0,
+		Jitter:   0.1,
+		Steps:    6,
+		Cap:      10 * time.Minute,
+	}
+
+	// skuCache will already be created at this step by newAzureCache()
 	if err := manager.forceRefresh(); err != nil {
-		return nil, err
+		err = kretry.OnError(retryBackoff, retry.IsErrorRetriable, func() (err error) {
+			return manager.forceRefresh()
+		})
+		if err != nil {
+			return nil, err
+		}
+		return manager, nil
 	}
 
 	return manager, nil
 }
 
 // CreateAzureManager creates Azure Manager object to work with Azure.
-func CreateAzureManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGroupDiscoveryOptions) (*AzureManager, error) {
-	return createAzureManagerInternal(configReader, discoveryOpts, nil)
+func CreateAzureManager(configReader io.Reader, discoveryOpts cloudprovider.NodeGroupDiscoveryOptions,
+	autoScalingOpts *config.AutoscalingOptions) (*AzureManager, error) {
+	return createAzureManagerInternal(configReader, discoveryOpts, autoScalingOpts, nil)
 }
 
 func (m *AzureManager) fetchExplicitNodeGroups(specs []string) error {
@@ -143,7 +187,7 @@ func (m *AzureManager) buildNodeGroupFromSpec(spec string) (cloudprovider.NodeGr
 	if strings.EqualFold(m.config.VMType, vmTypeVMSS) {
 		scaleToZeroSupported = scaleToZeroSupportedVMSS
 	}
-	s, err := dynamic.SpecFromString(spec, scaleToZeroSupported)
+	s, err := dynamic.SpecFromStringWithLabelsAndTaints(spec, scaleToZeroSupported)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse node group spec: %v", err)
 	}
@@ -152,7 +196,7 @@ func (m *AzureManager) buildNodeGroupFromSpec(spec string) (cloudprovider.NodeGr
 	case vmTypeStandard:
 		return NewAgentPool(s, m)
 	case vmTypeVMSS:
-		return NewScaleSet(s, m, -1)
+		return NewScaleSet(s, m, -1, false)
 	case vmTypeAKS:
 		return NewAKSAgentPool(s, m)
 	default:
@@ -182,6 +226,8 @@ func (m *AzureManager) forceRefresh() error {
 	return nil
 }
 
+// invalidateCache forces cache reload on the next check
+// by manipulating lastRefresh timestamp
 func (m *AzureManager) invalidateCache() {
 	m.lastRefresh = time.Now().Add(-1 * m.azureCache.refreshInterval)
 	klog.V(2).Infof("Invalidated Azure cache")
@@ -248,9 +294,10 @@ func (m *AzureManager) GetNodeGroupForInstance(instance *azureRef) (cloudprovide
 }
 
 // GetScaleSetOptions parse options extracted from VMSS tags and merges them with provided defaults
-func (m *AzureManager) GetScaleSetOptions(scaleSetName string, defaults config.NodeGroupAutoscalingOptions) *config.NodeGroupAutoscalingOptions {
+func (m *AzureManager) GetScaleSetOptions(scaleSetName string, defaults config.
+	NodeGroupAutoscalingOptions) *config.NodeGroupAutoscalingOptions {
 	options := m.azureCache.getAutoscalingOptions(azureRef{Name: scaleSetName})
-	if options == nil || len(options) == 0 {
+	if len(options) == 0 {
 		return &defaults
 	}
 
@@ -336,7 +383,8 @@ func (m *AzureManager) getFilteredScaleSets(filter []labelAutoDiscoveryConfig) (
 			continue
 		}
 		if spec.MaxSize < spec.MinSize {
-			klog.Warningf("ignoring vmss %q because of maximum size must be greater than minimum size: max=%d < min=%d", *scaleSet.Name, spec.MaxSize, spec.MinSize)
+			klog.Warningf("ignoring vmss %q because of maximum size must be greater than minimum "+
+				"size: max=%d < min=%d", *scaleSet.Name, spec.MaxSize, spec.MinSize)
 			continue
 		}
 
@@ -345,7 +393,9 @@ func (m *AzureManager) getFilteredScaleSets(filter []labelAutoDiscoveryConfig) (
 			curSize = *scaleSet.Sku.Capacity
 		}
 
-		vmss, err := NewScaleSet(spec, m, curSize)
+		dedicatedHost := scaleSet.VirtualMachineScaleSetProperties != nil && scaleSet.VirtualMachineScaleSetProperties.HostGroup != nil
+
+		vmss, err := NewScaleSet(spec, m, curSize, dedicatedHost)
 		if err != nil {
 			klog.Warningf("ignoring vmss %q %s", *scaleSet.Name, err)
 			continue

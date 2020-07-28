@@ -58,7 +58,7 @@ func TestCombinedConcurrentScaleUpErrors(t *testing.T) {
 			},
 			expectedErr: errors.NewAutoscalerError(
 				errors.CloudProviderError,
-				"provider error ...and other concurrent errors: [\"[internalError] internal error\"]",
+				"provider error ...and other concurrent errors: [\"[InternalError] internal error\"]",
 			),
 		},
 		{
@@ -69,7 +69,7 @@ func TestCombinedConcurrentScaleUpErrors(t *testing.T) {
 			},
 			expectedErr: errors.NewAutoscalerError(
 				errors.CloudProviderError,
-				"provider error ...and other concurrent errors: [\"[internalError] internal error\"]",
+				"provider error ...and other concurrent errors: [\"[InternalError] internal error\"]",
 			),
 		},
 		{
@@ -104,7 +104,7 @@ func TestCombinedConcurrentScaleUpErrors(t *testing.T) {
 			},
 			expectedErr: errors.NewAutoscalerError(
 				errors.CloudProviderError,
-				"A ...and other concurrent errors: [\"[cloudProviderError] B\", \"[internalError] A\"]"),
+				"A ...and other concurrent errors: [\"[CloudProviderError] B\", \"[InternalError] A\"]"),
 		},
 		{
 			desc: "different errors with quotes in messages",

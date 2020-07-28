@@ -37,13 +37,6 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 )
 
-const (
-	// MaxKubernetesEmptyNodeDeletionTime is the maximum time needed by Kubernetes to delete an empty node.
-	MaxKubernetesEmptyNodeDeletionTime = 3 * time.Minute
-	// MaxCloudProviderNodeDeletionTime is the maximum time needed by cloud provider to delete a node.
-	MaxCloudProviderNodeDeletionTime = 5 * time.Minute
-)
-
 // NodeDeletionBatcher batch scale down candidates for one node group and remove them.
 type NodeDeletionBatcher struct {
 	sync.Mutex
@@ -173,9 +166,9 @@ func nodeScaleDownReason(node *apiv1.Node, drain bool) metrics.NodeScaleDownReas
 }
 
 // IsNodeBeingDeleted returns true iff a given node is being deleted.
-func IsNodeBeingDeleted(node *apiv1.Node, timestamp time.Time) bool {
+func IsNodeBeingDeleted(ac *context.AutoscalingContext, node *apiv1.Node, timestamp time.Time) bool {
 	deleteTime, _ := taints.GetToBeDeletedTime(node)
-	return deleteTime != nil && (timestamp.Sub(*deleteTime) < MaxCloudProviderNodeDeletionTime || timestamp.Sub(*deleteTime) < MaxKubernetesEmptyNodeDeletionTime)
+	return deleteTime != nil && (timestamp.Sub(*deleteTime) < ac.MaxCloudProviderNodeDeletionTime || timestamp.Sub(*deleteTime) < ac.MaxKubernetesEmptyNodeDeletionTime)
 }
 
 // CleanUpAndRecordFailedScaleDownEvent record failed scale down event and log an error.
@@ -193,13 +186,14 @@ func CleanUpAndRecordFailedScaleDownEvent(ctx *context.AutoscalingContext, node 
 }
 
 // RegisterAndRecordSuccessfulScaleDownEvent register scale down and record successful scale down event.
-func RegisterAndRecordSuccessfulScaleDownEvent(ctx *context.AutoscalingContext, csr *clusterstate.ClusterStateRegistry, node *apiv1.Node, nodeGroup cloudprovider.NodeGroup, drain bool, nodeDeletionTracker *deletiontracker.NodeDeletionTracker) {
+func RegisterAndRecordSuccessfulScaleDownEvent(ctx *context.AutoscalingContext, csr *clusterstate.ClusterStateRegistry,
+	node *apiv1.Node, nodeGroup cloudprovider.NodeGroup, drain bool, nodeDeletionTracker *deletiontracker.NodeDeletionTracker) {
 	ctx.Recorder.Eventf(node, apiv1.EventTypeNormal, "ScaleDown", "nodes removed by cluster autoscaler")
 	csr.RegisterScaleDown(&clusterstate.ScaleDownRequest{
 		NodeGroup:          nodeGroup,
 		NodeName:           node.Name,
 		Time:               time.Now(),
-		ExpectedDeleteTime: time.Now().Add(MaxCloudProviderNodeDeletionTime),
+		ExpectedDeleteTime: time.Now().Add(ctx.MaxCloudProviderNodeDeletionTime),
 	})
 	gpuConfig := ctx.CloudProvider.GetNodeGpuConfig(node)
 	metricResourceName, metricGpuType := gpu.GetGpuInfoForMetrics(gpuConfig, ctx.CloudProvider.GetAvailableGPUTypes(), node, nodeGroup)

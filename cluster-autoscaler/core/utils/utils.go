@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -116,7 +117,16 @@ func SanitizeNode(node *apiv1.Node, nodeGroup string, taintConfig taints.TaintCo
 		}
 	}
 	newNode.Name = nodeName
-	newNode.Spec.Taints = taints.SanitizeTaints(newNode.Spec.Taints, taintConfig)
+
+	// For AKS, we suggest customers to apply the "CriticalAddonsOnly=true:NoSchedule"
+	// to their system pools. If they have CA enabled on the system pool, this might inadvertently
+	// lead to  CA scaling up this pool because it sanitizes this taint (because rescheduler also uses that)
+	// so we need to guard against that scenario
+	isSystemPool := false
+	if node.Labels != nil && strings.EqualFold(node.Labels["kubernetes.azure.com/mode"], "system") {
+		isSystemPool = true
+	}
+	newNode.Spec.Taints = taints.SanitizeTaints(newNode.Spec.Taints, taintConfig, isSystemPool)
 	return newNode, nil
 }
 

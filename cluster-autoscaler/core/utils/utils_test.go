@@ -17,6 +17,7 @@ limitations under the License.
 package utils
 
 import (
+	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
 
@@ -53,6 +54,30 @@ func TestSanitizeLabels(t *testing.T) {
 	assert.Equal(t, node.Labels["x"], "y")
 	assert.NotEqual(t, node.Name, oldNode.Name)
 	assert.Equal(t, node.Labels[apiv1.LabelHostname], node.Name)
+}
+
+func TestSanitizeTemplateNodeSystemPool(t *testing.T) {
+	oldNode := BuildTestNode("ng1-1", 1000, 1000)
+	oldNode.Labels = map[string]string{
+		apiv1.LabelHostname: "abc",
+		"x":                 "y",
+	}
+	oldNode.Spec.Taints = []apiv1.Taint{}
+	oldNode.Spec.Taints = append(oldNode.Spec.Taints, apiv1.Taint{
+		Key:    taints.ReschedulerTaintKey,
+		Effect: "NoSchedule",
+		Value:  "true",
+	})
+	node, err := SanitizeNode(oldNode, "bzium", taints.TaintConfig{})
+	assert.NoError(t, err)
+	require.Equal(t, len(node.Spec.Taints), 0)
+
+	// Test with a system pool - the taint is kept
+	oldNode.Labels["kubernetes.azure.com/mode"] = "system"
+	node, err = SanitizeNode(oldNode, "bzium", taints.TaintConfig{})
+	assert.NoError(t, err)
+	require.Equal(t, len(node.Spec.Taints), 1)
+	assert.Equal(t, node.Spec.Taints[0].Key, taints.ReschedulerTaintKey)
 }
 
 func TestGetNodeResource(t *testing.T) {
