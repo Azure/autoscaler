@@ -1,0 +1,27 @@
+{
+  "name": "Cluster autoscaler 1.30 (Go 1.22), Azure",
+  "image": "mcr.microsoft.com/vscode/devcontainers/go:1.22",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {},
+    "ghcr.io/devcontainers/features/azure-cli:1": {},
+    "ghcr.io/rio/features/skaffold:2": {},
+    "ghcr.io/eitsupi/devcontainer-features/jq-likes:2": {
+      "yqVersion": "latest"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "mutantdino.resourcemonitor",
+        "eamodio.gitlens",
+        "timonwong.shellcheck",
+        "GitHub.copilot",
+        "ms-azuretools.vscode-bicep",
+        "ms-vscode.azure-account"
+      ]
+    }
+  },  
+  "postCreateCommand": "skaffold config set --global collect-metrics false"
+}
