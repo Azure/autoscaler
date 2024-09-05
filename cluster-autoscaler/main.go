@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/actuation"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaleup/orchestrator"
 	"k8s.io/autoscaler/cluster-autoscaler/debuggingsnapshot"
@@ -56,6 +58,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/core"
 	"k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor"
+	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/actuation"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
@@ -80,6 +83,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/version"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	kube_flag "k8s.io/component-base/cli/flag"
@@ -283,6 +287,19 @@ var (
 	forceDeleteLongUnregisteredNodes             = flag.Bool("force-delete-unregistered-nodes", false, "Whether to enable force deletion of long unregistered nodes, regardless of the min size of the node group the belong to.")
 	forceDeleteFailedNodes                       = flag.Bool("force-delete-failed-nodes", false, "Whether to enable force deletion of failed nodes, regardless of the min size of the node group the belong to.")
 	enableDynamicResourceAllocation              = flag.Bool("enable-dynamic-resource-allocation", false, "Whether logic for handling DRA (Dynamic Resource Allocation) objects is enabled.")
+
+	configPath = flag.String("config-path", "", "The path for the mounted ConfigMap containing the settings used for dynamic reconfiguration. Set as empty string to use static mode.")
+)
+
+// fork-specific flags that are no longer functional but kept for compatibility.
+var (
+	enableForceDelete         = flag.Bool("enable-force-delete", false, "Whether to enable force deletion")
+	enableDynamicInstanceList = flag.Bool("enable-dynamic-instance-list", false, "Whether to enable dynamic instance list workflow")
+	enableDetailedCSEMessage  = flag.Bool("enable-detailed-cse-message", false, "Whether to enable emitting error messages in CSE error body")
+)
+
+var (
+	configFetcher dynamic.ConfigFetcher
 )
 
 func isFlagPassed(name string) bool {
@@ -384,7 +401,6 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		MaxMemoryTotal:                   maxMemoryTotal,
 		MinMemoryTotal:                   minMemoryTotal,
 		GpuTotal:                         parsedGpuTotal,
-		NodeGroups:                       *nodeGroupsFlag,
 		EnforceNodeGroupMinSize:          *enforceNodeGroupMinSize,
 		ScaleDownDelayAfterAdd:           *scaleDownDelayAfterAdd,
 		ScaleDownDelayTypeLocal:          *scaleDownDelayTypeLocal,
@@ -464,7 +480,46 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		ForceDeleteLongUnregisteredNodes:             *forceDeleteLongUnregisteredNodes,
 		ForceDeleteFailedNodes:                       *forceDeleteFailedNodes,
 		DynamicResourceAllocationEnabled:             *enableDynamicResourceAllocation,
+		NodeGroups: func() []string {
+			// Temporary + fork only, will be removed after CA is made restartable by PUT AP and have NodeGroups passed in by flags.
+			// Will fetch from ConfigMap rather than flags for now.
+			configFetcher = dynamic.NewConfigFetcher(dynamic.ConfigFetcherOptions{
+				ConfigPath: "/opt/conf/autoscaler/settings.json",
+			})
+			if updatedConfig, err := configFetcher.FetchConfigIfUpdated(); err != nil {
+				// Ideally we want this to be fatal, but that would resulted in CrashLoopBackOff in a race condition where the configmap takes time to initialize, delaying the initialization.
+				klog.Errorf("failed to fetch updated NodeGroups config: %v, could be resulted from the configmap not initialized yet", err)
+			} else if updatedConfig != nil {
+				// First fetch is always considered updated if not empty
+				klog.V(3).Infof("Fetched NodeGroups: %v", updatedConfig.NodeGroupSpecStrings())
+				return updatedConfig.NodeGroupSpecStrings()
+			}
+			return []string{}
+		}(),
 	}
+}
+
+func getKubeConfig() *rest.Config {
+	if *kubeConfigFile != "" {
+		klog.V(1).Infof("Using kubeconfig file: %s", *kubeConfigFile)
+		// use the current context in kubeconfig
+		config, err := clientcmd.BuildConfigFromFlags("", *kubeConfigFile)
+		if err != nil {
+			klog.Fatalf("Failed to build config: %v", err)
+		}
+		return config
+	}
+	url, err := url.Parse(*kubernetes)
+	if err != nil {
+		klog.Fatalf("Failed to parse Kubernetes url: %v", err)
+	}
+
+	kubeConfig, err := config.GetKubeClientConfig(url)
+	if err != nil {
+		klog.Fatalf("Failed to build Kubernetes client configuration: %v", err)
+	}
+
+	return kubeConfig
 }
 
 func registerSignalHandlers(autoscaler core.Autoscaler) {
@@ -673,11 +728,35 @@ func run(healthCheck *metrics.HealthCheck, debuggingSnapshotter debuggingsnapsho
 		for {
 			trigger.Wait(lastRun)
 			lastRun = time.Now()
+
+			// Temporary + fork only, will be removed after CA is made restartable by PUT AP and have NodeGroups passed in by flags.
+			// Will restart as soon as it changes to OM-induced restart + mimic passing in by flags.
+			// Expect configFetcher to be initialized. It contains the previous state to compare the difference to.
+			if updatedConfig, err := configFetcher.FetchConfigIfUpdated(); err != nil {
+				// Ideally we want this to be fatal, but that would resulted in CrashLoopBackOff in a race condition where the configmap takes time to initialize, delaying the initialization.
+				klog.Errorf("failed to fetch updated NodeGroups config: %v, could be resulted from the configmap not initialized yet", err)
+			} else if updatedConfig != nil {
+				klog.V(3).Infof("NodeGroups config has changed: %v, restarting...", updatedConfig.NodeGroupSpecStrings())
+				os.Exit(0)
+			}
+
 			loop.RunAutoscalerOnce(autoscaler, healthCheck, lastRun)
 		}
 	} else {
 		for {
 			time.Sleep(*scanInterval)
+
+			// Temporary + fork only, will be removed after CA is made restartable by PUT AP and have NodeGroups passed in by flags.
+			// Will restart as soon as it changes to OM-induced restart + mimic passing in by flags.
+			// Expect configFetcher to be initialized. It contains the previous state to compare the difference to.
+			if updatedConfig, err := configFetcher.FetchConfigIfUpdated(); err != nil {
+				// Ideally we want this to be fatal, but that would resulted in CrashLoopBackOff in a race condition where the configmap takes time to initialize, delaying the initialization.
+				klog.Errorf("failed to fetch updated NodeGroups config: %v, could be resulted from the configmap not initialized yet", err)
+			} else if updatedConfig != nil {
+				klog.V(3).Infof("NodeGroups config has changed: %v, restarting...", updatedConfig.NodeGroupSpecStrings())
+				os.Exit(0)
+			}
+
 			loop.RunAutoscalerOnce(autoscaler, healthCheck, time.Now())
 		}
 	}
