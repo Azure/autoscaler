@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2024 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package version
+package taints
 
-// ClusterAutoscalerVersion contains version of CA.
-const ClusterAutoscalerVersion = "1.31.5"
+import (
+	apiv1 "k8s.io/api/core/v1"
+	cloudproviderapi "k8s.io/cloud-provider/api"
+)
+
+// HasShutdownTaint returns true if cloudprovider node shutdown taint is applied on the node.
+func HasShutdownTaint(node *apiv1.Node) bool {
+	return HasTaint(node, cloudproviderapi.TaintNodeShutdown)
+}
+
+// HasUnreachableTaint returns true if unreachable taint is applied on the node.
+func HasUnreachableTaint(node *apiv1.Node) bool {
+	return HasTaint(node, apiv1.TaintNodeUnreachable)
+}
