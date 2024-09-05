@@ -19,10 +19,10 @@ set -o pipefail
 set -o nounset
 
 CONTRIB_ROOT="$(dirname ${BASH_SOURCE})/.."
-PROJECT_NAMES=(addon-resizer vertical-pod-autoscaler)
+PROJECT_NAMES=(addon-resizer cluster-autoscaler vertical-pod-autoscaler)
 
 if [[ $# -ne 1 ]]; then
-  echo "missing subcommand: [build|install|test]"
+  echo "missing subcommand: [build|install|test|coverage]"
   exit 1
 fi
 
@@ -35,6 +35,8 @@ case "${CMD}" in
     ;;
   "test")
     ;;
+  "coverage")
+    ;;
   *)
     echo "invalid subcommand: ${CMD}"
     exit 1
@@ -43,16 +45,24 @@ esac
 
 for project_name in ${PROJECT_NAMES[*]}; do
   (
-    export GO111MODULE=auto
     project=${CONTRIB_ROOT}/${project_name}
     echo "${CMD}ing ${project}"
     cd "${project}"
     case "${CMD}" in
+      "coverage")
+        if [[ -n $(find . -name "Godeps.json") ]]; then
+          godep go test -coverprofile=coverage.txt -covermode=atomic -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v /cloudprovider/ && go list ./cloudprovider/azure/...)
+          pwd
+        else
+          go test -coverprofile=coverage.txt -covermode=atomic -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v /cloudprovider/ && go list ./cloudprovider/azure/...)
+          pwd
+        fi
+        ;;
       "test")
         if [[ -n $(find . -name "Godeps.json") ]]; then
-          godep go test -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e)
+          godep go test -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v /cloudprovider/ && go list ./cloudprovider/azure/...)
         else
-          go test -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v cluster-autoscaler/apis)
+          go test -race $(go list ./... | grep -v /vendor/ | grep -v vertical-pod-autoscaler/e2e | grep -v /cloudprovider/ && go list ./cloudprovider/azure/...)
         fi
         ;;
       *)
@@ -63,10 +73,11 @@ for project_name in ${PROJECT_NAMES[*]}; do
 done;
 
 if [ "${CMD}" = "build" ] || [ "${CMD}" == "test" ]; then
-  pushd ${CONTRIB_ROOT}/vertical-pod-autoscaler/e2e
+  cd ${CONTRIB_ROOT}/vertical-pod-autoscaler/e2e
   go test -mod vendor -run=None ./...
-  popd
-  pushd ${CONTRIB_ROOT}/cluster-autoscaler/
-  go test ./...
-  popd
 fi
+# if [ "${CMD}" == "coverage" ]; then
+#   cd ${CONTRIB_ROOT}/vertical-pod-autoscaler/e2e
+#   go test -coverprofile=coverage.out -covermode=atomic -mod vendor -run=None ./...
+# pwd
+# fi
