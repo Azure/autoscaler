@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1.23.11
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.22.2
 
 ENV GOPATH /gopath/
 ENV PATH $GOPATH/bin:$PATH
