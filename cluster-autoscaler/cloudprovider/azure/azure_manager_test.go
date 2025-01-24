@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	azclient "sigs.k8s.io/cloud-provider-azure/pkg/azclient"
 	azclients "sigs.k8s.io/cloud-provider-azure/pkg/azureclients"
@@ -297,6 +298,7 @@ func TestCreateAzureManagerValidConfig(t *testing.T) {
 		VmssVmsCacheJitter:                   120,
 		MaxDeploymentsCount:                  8,
 		EnableFastDeleteOnFailedProvisioning: true,
+		EnableVMsAgentPool:                   false,
 	}
 
 	assert.NoError(t, err)
@@ -618,9 +620,14 @@ func TestCreateAzureManagerWithNilConfig(t *testing.T) {
 	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
 	mockVMSSClient.EXPECT().List(gomock.Any(), "resourceGroup").Return([]compute.VirtualMachineScaleSet{}, nil).AnyTimes()
 	mockVMClient.EXPECT().List(gomock.Any(), "resourceGroup").Return([]compute.VirtualMachine{}, nil).AnyTimes()
+	mockAgentpoolclient := NewMockAgentPoolsClient(ctrl)
+	vmspool := getTestVMsAgentPool(false)
+	fakeAPListPager := getFakeAgentpoolListPager(&vmspool)
+	mockAgentpoolclient.EXPECT().NewListPager(gomock.Any(), gomock.Any(), nil).Return(fakeAPListPager).AnyTimes()
 	mockAzClient := &azClient{
 		virtualMachinesClient:         mockVMClient,
 		virtualMachineScaleSetsClient: mockVMSSClient,
+		agentPoolClient:               mockAgentpoolclient,
 	}
 
 	expectedConfig := &Config{
@@ -702,6 +709,7 @@ func TestCreateAzureManagerWithNilConfig(t *testing.T) {
 		VmssVmsCacheJitter:                   90,
 		MaxDeploymentsCount:                  8,
 		EnableFastDeleteOnFailedProvisioning: true,
+		EnableVMsAgentPool:                   true,
 	}
 
 	t.Setenv("ARM_CLOUD", "AzurePublicCloud")
@@ -735,6 +743,7 @@ func TestCreateAzureManagerWithNilConfig(t *testing.T) {
 	t.Setenv("ARM_CLUSTER_RESOURCE_GROUP", "myrg")
 	t.Setenv("ARM_BASE_URL_FOR_AP_CLIENT", "nodeprovisioner-svc.nodeprovisioner.svc.cluster.local")
 	t.Setenv("AZURE_ENABLE_FAST_DELETE_ON_FAILED_PROVISIONING", "true")
+	t.Setenv("AZURE_ENABLE_VMS_AGENT_POOLS", "true")
 
 	t.Run("environment variables correctly set", func(t *testing.T) {
 		manager, err := createAzureManagerInternal(nil, cloudprovider.NodeGroupDiscoveryOptions{}, mockAzClient)
@@ -1016,7 +1025,7 @@ func TestFetchExplicitNodeGroups(t *testing.T) {
 	min, max, name := 1, 15, "test-asg"
 	ngdo := cloudprovider.NodeGroupDiscoveryOptions{
 		NodeGroupSpecs: []string{
-			fmt.Sprintf("%d:%d:%s", min, max, name),
+			fmt.Sprintf("%d:%d:%s:%s", min, max, deallocate.Delete, name),
 		},
 	}
 

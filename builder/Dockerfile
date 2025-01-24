@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM golang:1.23.2
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.22.2
+LABEL maintainer="Marcin Wielgus <mwielgus@google.com>"
 
 ENV GOPATH /gopath/
 ENV PATH $GOPATH/bin:$PATH
