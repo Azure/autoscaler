@@ -205,6 +205,7 @@ func RegisterAndRecordSuccessfulScaleDownEvent(ctx *context.AutoscalingContext, 
 	currentTime := time.Now()
 	expectedDeleteTime := time.Now().Add(MaxCloudProviderNodeDeletionTime)
 	scaleStateNotifier.RegisterScaleDown(nodeGroup, node.Name, currentTime, expectedDeleteTime)
+
 	gpuConfig := ctx.CloudProvider.GetNodeGpuConfig(node)
 	metricResourceName, metricGpuType := gpu.GetGpuInfoForMetrics(gpuConfig, ctx.CloudProvider.GetAvailableGPUTypes(), node, nodeGroup)
 	metrics.RegisterScaleDown(1, metricResourceName, metricGpuType, nodeScaleDownReason(node, drain))
