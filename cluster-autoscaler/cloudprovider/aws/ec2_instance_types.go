@@ -28,11 +28,7 @@ type InstanceType struct {
 }
 
 // StaticListLastUpdateTime is a string declaring the last time the static list was updated.
-<<<<<<< HEAD
 var StaticListLastUpdateTime = "2025-05-27"
-=======
-var StaticListLastUpdateTime = "2024-10-02"
->>>>>>> 92fc8f3d02 (Cherry-picking 1.31 from ADO)
 
 // InstanceTypes is a map of ec2 resources
 var InstanceTypes = map[string]*InstanceType{
