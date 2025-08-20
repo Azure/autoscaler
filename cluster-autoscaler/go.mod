@@ -286,4 +286,6 @@ replace k8s.io/autoscaler/cluster-autoscaler/apis => ./apis
 
 replace k8s.io/cri-client => k8s.io/cri-client v0.32.9
 
-replace k8s.io/externaljwt => k8s.io/externaljwt v0.32.9
+replace k8s.io/externaljwt => k8s.io/externaljwt v0.32.7
+
+replace github.com/google/pprof => github.com/google/pprof v0.0.0-20240827171923-fa2c70bbbfe5
