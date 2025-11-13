@@ -23,6 +23,7 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
@@ -250,11 +251,17 @@ func (tcp *TestCloudProvider) NewNodeGroup(machineType string, labels map[string
 		machineType:     machineType,
 		labels:          labels,
 		taints:          taints,
+		scaleDownPolicy: deallocate.Delete,
 	}, nil
 }
 
 // BuildNodeGroup returns a test node group.
 func (tcp *TestCloudProvider) BuildNodeGroup(id string, min, max, size int, exists bool, autoprovisioned bool, machineType string, opts *config.NodeGroupAutoscalingOptions) *TestNodeGroup {
+	return tcp.BuildNodeGroupWithPolicy(id, min, max, size, exists, autoprovisioned, machineType, opts, deallocate.Delete)
+}
+
+// BuildNodeGroupWithPolicy returns a test node group with scale down policy.
+func (tcp *TestCloudProvider) BuildNodeGroupWithPolicy(id string, min, max, size int, exists bool, autoprovisioned bool, machineType string, opts *config.NodeGroupAutoscalingOptions, scaleDownPolicy deallocate.ScaleDownPolicy) *TestNodeGroup {
 	return &TestNodeGroup{
 		cloudProvider:   tcp,
 		id:              id,
@@ -265,6 +272,7 @@ func (tcp *TestCloudProvider) BuildNodeGroup(id string, min, max, size int, exis
 		autoprovisioned: autoprovisioned,
 		machineType:     machineType,
 		opts:            opts,
+		scaleDownPolicy: scaleDownPolicy,
 	}
 }
 
@@ -301,6 +309,13 @@ func (tcp *TestCloudProvider) AddNodeGroupWithCustomOptions(id string, min int, 
 // AddAutoprovisionedNodeGroup adds node group to test cloud provider.
 func (tcp *TestCloudProvider) AddAutoprovisionedNodeGroup(id string, min int, max int, size int, machineType string) *TestNodeGroup {
 	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, true, true, machineType, nil)
+	tcp.InsertNodeGroup(nodeGroup)
+	return nodeGroup
+}
+
+// AddDeallocateNodeGroup adds node group to test cloud provider in deallocate mode.
+func (tcp *TestCloudProvider) AddDeallocateNodeGroup(id string, min int, max int, size int) cloudprovider.NodeGroup {
+	nodeGroup := tcp.BuildNodeGroupWithPolicy(id, min, max, size, true, false, "", nil, deallocate.Deallocate)
 	tcp.InsertNodeGroup(nodeGroup)
 	return nodeGroup
 }
@@ -369,6 +384,7 @@ type TestNodeGroup struct {
 	labels          map[string]string
 	taints          []apiv1.Taint
 	opts            *config.NodeGroupAutoscalingOptions
+	scaleDownPolicy deallocate.ScaleDownPolicy
 }
 
 // NewTestNodeGroup creates a TestNodeGroup without setting up the realted TestCloudProvider.
@@ -593,4 +609,9 @@ func (tng *TestNodeGroup) MachineType() string {
 // SetCloudProvider sets the cloud provider for the node group.
 func (tng *TestNodeGroup) SetCloudProvider(provider *TestCloudProvider) {
 	tng.cloudProvider = provider
+}
+
+// ScaleDownPolicy returns the policy for the node group on scale downs. Whether Delete or Deallocate.
+func (tng *TestNodeGroup) ScaleDownPolicy() deallocate.ScaleDownPolicy {
+	return tng.scaleDownPolicy
 }

@@ -28,6 +28,8 @@ import (
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
+	"k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -37,7 +39,9 @@ const (
 func TestFilterOutNodesWithUnreadyResources(t *testing.T) {
 	start := time.Now()
 	later := start.Add(10 * time.Minute)
+	laterRFC3339 := later.Format(time.RFC3339)
 	expectedReadiness := make(map[string]bool)
+	expectedAnnotation := make(map[string]*string)
 	gpuLabels := map[string]string{
 		GPULabel: "nvidia-tesla-k80",
 	}
@@ -67,6 +71,7 @@ func TestFilterOutNodesWithUnreadyResources(t *testing.T) {
 	nodeGpuReady.Status.Allocatable[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(1, resource.DecimalSI)
 	nodeGpuReady.Status.Capacity[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(1, resource.DecimalSI)
 	expectedReadiness[nodeGpuReady.Name] = true
+	expectedAnnotation[nodeGpuReady.Name] = nil
 
 	nodeGpuUnready := &apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -83,6 +88,7 @@ func TestFilterOutNodesWithUnreadyResources(t *testing.T) {
 	nodeGpuUnready.Status.Allocatable[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(0, resource.DecimalSI)
 	nodeGpuUnready.Status.Capacity[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(0, resource.DecimalSI)
 	expectedReadiness[nodeGpuUnready.Name] = false
+	expectedAnnotation[nodeGpuUnready.Name] = ptr.To(laterRFC3339)
 
 	nodeDirectXReady := &apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -99,6 +105,7 @@ func TestFilterOutNodesWithUnreadyResources(t *testing.T) {
 	nodeDirectXReady.Status.Allocatable[gpu.ResourceDirectX] = *resource.NewQuantity(1, resource.DecimalSI)
 	nodeDirectXReady.Status.Capacity[gpu.ResourceDirectX] = *resource.NewQuantity(1, resource.DecimalSI)
 	expectedReadiness[nodeDirectXReady.Name] = true
+	expectedAnnotation[nodeDirectXReady.Name] = nil
 
 	nodeDirectXUnready := &apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -115,6 +122,7 @@ func TestFilterOutNodesWithUnreadyResources(t *testing.T) {
 	nodeDirectXUnready.Status.Allocatable[gpu.ResourceDirectX] = *resource.NewQuantity(0, resource.DecimalSI)
 	nodeDirectXUnready.Status.Capacity[gpu.ResourceDirectX] = *resource.NewQuantity(0, resource.DecimalSI)
 	expectedReadiness[nodeDirectXUnready.Name] = false
+	expectedAnnotation[nodeDirectXUnready.Name] = ptr.To(laterRFC3339)
 
 	nodeGpuUnready2 := &apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -127,6 +135,7 @@ func TestFilterOutNodesWithUnreadyResources(t *testing.T) {
 		},
 	}
 	expectedReadiness[nodeGpuUnready2.Name] = false
+	expectedAnnotation[nodeGpuUnready2.Name] = ptr.To(laterRFC3339)
 
 	nodeNoGpuReady := &apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -139,6 +148,7 @@ func TestFilterOutNodesWithUnreadyResources(t *testing.T) {
 		},
 	}
 	expectedReadiness[nodeNoGpuReady.Name] = true
+	expectedAnnotation[nodeNoGpuReady.Name] = nil
 
 	nodeNoGpuUnready := &apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -151,6 +161,7 @@ func TestFilterOutNodesWithUnreadyResources(t *testing.T) {
 		},
 	}
 	expectedReadiness[nodeNoGpuUnready.Name] = false
+	expectedAnnotation[nodeNoGpuUnready.Name] = nil
 
 	initialReadyNodes := []*apiv1.Node{
 		nodeGpuReady,
@@ -191,6 +202,13 @@ func TestFilterOutNodesWithUnreadyResources(t *testing.T) {
 			assert.Equal(t, node.Status.Conditions[0].Status, apiv1.ConditionTrue, fmt.Sprintf("Unexpected ready condition value for node %s", node.Name))
 		} else {
 			assert.Equal(t, node.Status.Conditions[0].Status, apiv1.ConditionFalse, fmt.Sprintf("Unexpected ready condition value for node %s", node.Name))
+		}
+		lastTransitionTimeAnnotation := node.Annotations[kubernetes.NodeReadyLastTranistionTimeAnnotationKey]
+		if expectedAnnotation[node.Name] == nil {
+			assert.Empty(t, lastTransitionTimeAnnotation, fmt.Sprintf("Node %s should not have last transition time annotation", node.Name))
+		} else {
+			assert.NotEmpty(t, lastTransitionTimeAnnotation, fmt.Sprintf("Node %s should have last transition time annotation", node.Name))
+			assert.Equal(t, lastTransitionTimeAnnotation, *expectedAnnotation[node.Name], fmt.Sprintf("Unexpected last transition time annotation for node %s: expected %v, got %v", node.Name, expectedAnnotation[node.Name], lastTransitionTimeAnnotation))
 		}
 	}
 }
