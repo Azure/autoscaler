@@ -2848,7 +2848,7 @@ func buildFakeClient(t *testing.T, nodes ...*apiv1.Node) *fake.Clientset {
 func createNodeGroupWithSoftTaintedNodes(provider *testprovider.TestCloudProvider, name string, minSize int, maxSize int, size int) []*apiv1.Node {
 	nodesCreationTime := time.Time{}
 	var ngNodes []*apiv1.Node
-	ng := provider.BuildNodeGroup(name, minSize, maxSize, size, true, false, "", nil, false)
+	ng := provider.BuildNodeGroup(name, minSize, maxSize, size, true, false, "", nil)
 	provider.InsertNodeGroup(ng)
 	for i := range size {
 		node := BuildTestNode(fmt.Sprintf("%s-node-%d", name, i), 2000, 1000)

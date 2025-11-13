@@ -256,11 +256,11 @@ func (tcp *TestCloudProvider) NewNodeGroup(machineType string, labels map[string
 }
 
 // BuildNodeGroup returns a test node group.
-func (tcp *TestCloudProvider) BuildNodeGroup(id string, min, max, size int, exists bool, autoprovisioned bool, machineType string, opts *config.NodeGroupAutoscalingOptions, deallocateMode bool) *TestNodeGroup {
-	scaleDownPolicy := deallocate.Delete
-	if deallocateMode {
-		scaleDownPolicy = deallocate.Deallocate
-	}
+func (tcp *TestCloudProvider) BuildNodeGroup(id string, min, max, size int, exists bool, autoprovisioned bool, machineType string, opts *config.NodeGroupAutoscalingOptions) *TestNodeGroup {
+	return tcp.BuildNodeGroupWithPolicy(id, min, max, size, exists, autoprovisioned, machineType, opts, deallocate.Delete)
+}
+
+func (tcp *TestCloudProvider) BuildNodeGroupWithPolicy(id string, min, max, size int, exists bool, autoprovisioned bool, machineType string, opts *config.NodeGroupAutoscalingOptions, scaleDownPolicy deallocate.ScaleDownPolicy) *TestNodeGroup {
 	return &TestNodeGroup{
 		cloudProvider:   tcp,
 		id:              id,
@@ -285,14 +285,14 @@ func (tcp *TestCloudProvider) InsertNodeGroup(nodeGroup cloudprovider.NodeGroup)
 
 // AddNodeGroup adds node group to test cloud provider.
 func (tcp *TestCloudProvider) AddNodeGroup(id string, min int, max int, size int) cloudprovider.NodeGroup {
-	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, true, false, "", nil, false)
+	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, true, false, "", nil)
 	tcp.InsertNodeGroup(nodeGroup)
 	return nodeGroup
 }
 
 // AddUpcomingNodeGroup adds upcoming node group to test cloud provider.
 func (tcp *TestCloudProvider) AddUpcomingNodeGroup(id string, min int, max int, size int) cloudprovider.NodeGroup {
-	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, false, false, "", nil, false)
+	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, false, false, "", nil)
 	tcp.InsertNodeGroup(nodeGroup)
 	return nodeGroup
 }
@@ -300,21 +300,21 @@ func (tcp *TestCloudProvider) AddUpcomingNodeGroup(id string, min int, max int, 
 // AddNodeGroupWithCustomOptions adds node group with custom options
 // to test cloud provider.
 func (tcp *TestCloudProvider) AddNodeGroupWithCustomOptions(id string, min int, max int, size int, opts *config.NodeGroupAutoscalingOptions) cloudprovider.NodeGroup {
-	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, true, false, "", opts, false)
+	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, true, false, "", opts)
 	tcp.InsertNodeGroup(nodeGroup)
 	return nodeGroup
 }
 
 // AddAutoprovisionedNodeGroup adds node group to test cloud provider.
 func (tcp *TestCloudProvider) AddAutoprovisionedNodeGroup(id string, min int, max int, size int, machineType string) *TestNodeGroup {
-	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, true, true, machineType, nil, false)
+	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, true, true, machineType, nil)
 	tcp.InsertNodeGroup(nodeGroup)
 	return nodeGroup
 }
 
 // AddDeallocateNodeGroup adds node group to test cloud provider in deallocate mode.
 func (tcp *TestCloudProvider) AddDeallocateNodeGroup(id string, min int, max int, size int) cloudprovider.NodeGroup {
-	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, true, false, "", nil, true)
+	nodeGroup := tcp.BuildNodeGroupWithPolicy(id, min, max, size, true, false, "", nil, deallocate.Deallocate)
 	tcp.InsertNodeGroup(nodeGroup)
 	return nodeGroup
 }

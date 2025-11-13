@@ -1036,7 +1036,7 @@ func runSimpleScaleUpTest(t *testing.T, config *ScaleUpTestConfig) *ScaleUpTestR
 	// Build node groups without any nodes
 	for name, ng := range groupConfigs {
 		if provider.GetNodeGroup(name) == nil {
-			tng := provider.BuildNodeGroup(name, ng.MinSize, ng.MaxSize, 0, true, false, config.NodeTemplateConfigs[name].MachineType, &options.NodeGroupDefaults, false)
+			tng := provider.BuildNodeGroup(name, ng.MinSize, ng.MaxSize, 0, true, false, config.NodeTemplateConfigs[name].MachineType, &options.NodeGroupDefaults)
 			provider.InsertNodeGroup(tng)
 		}
 	}

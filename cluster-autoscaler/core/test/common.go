@@ -232,7 +232,7 @@ func (p *MockAutoprovisioningNodeGroupManager) createNodeGroup(context *context.
 		return nodegroups.CreateNodeGroupResult{}, errors.ToAutoscalerError(errors.InternalError, fmt.Errorf("expected test CloudProvider, found %v", reflect.TypeOf(context.CloudProvider)))
 	}
 	for i := 0; i < p.ExtraGroups; i++ {
-		extraNodeGroup := testCloudProvider.BuildNodeGroup(fmt.Sprintf("autoprovisioned-%s-%d", testGroup.MachineType(), i+1), 0, 1000, 0, false, true, testGroup.MachineType(), nil, false)
+		extraNodeGroup := testCloudProvider.BuildNodeGroup(fmt.Sprintf("autoprovisioned-%s-%d", testGroup.MachineType(), i+1), 0, 1000, 0, false, true, testGroup.MachineType(), nil)
 		assert.NoError(p.T, err)
 		extraGroup, err := extraNodeGroup.Create()
 		assert.NoError(p.T, err)
