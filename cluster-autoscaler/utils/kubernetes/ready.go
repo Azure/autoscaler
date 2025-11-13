@@ -21,6 +21,7 @@ import (
 	"time"
 
 	apiv1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // NodeNotReadyReason reprents a reason for node to be unready. While it is
@@ -39,6 +40,10 @@ const (
 	// to indicate nodes that appear Ready in the API, but are treated as
 	// still upcoming due to applied startup taint.
 	StartupNodes NodeNotReadyReason = "cluster-autoscaler.kubernetes.io/startup-taint"
+
+	// NodeReadyLastTranistionTimeAnnotationKey is a fake annotation key used internally by Cluster Autoscaler
+	// to preserve the original LastTransitionTime of NodeReady condition when marking node as not ready.
+	NodeReadyLastTranistionTimeAnnotationKey = "cluster-autoscaler.kubernetes.io/original-ready-transition-time"
 )
 
 // IsNodeReadyAndSchedulable returns true if the node is ready and schedulable.
@@ -143,8 +148,33 @@ func GetUnreadyNodeCopy(node *apiv1.Node, reason NodeNotReadyReason) *apiv1.Node
 	for _, condition := range newNode.Status.Conditions {
 		if condition.Type != apiv1.NodeReady {
 			newNodeConditions = append(newNodeConditions, condition)
+		} else {
+			// record the original NodeReady LastTransitionTime
+			RecordNodeReadyLastTransitonTime(newNode, condition.LastTransitionTime)
 		}
 	}
 	newNode.Status.Conditions = newNodeConditions
 	return newNode
+}
+
+// recordNodeReadyLastTransitionTime records the original LastTransitionTime of NodeReady condition as an annotation on the node
+// (this is not meant to be persisted outside of CA clusterstate)
+func RecordNodeReadyLastTransitonTime(node *apiv1.Node, lastTransitionTime metav1.Time) {
+	if node.Annotations == nil {
+		node.Annotations = make(map[string]string)
+	}
+	node.Annotations[NodeReadyLastTranistionTimeAnnotationKey] = lastTransitionTime.Format(time.RFC3339)
+}
+
+// getRecordedNodeReadyLastTransitionTime gets the recorded original LastTransitionTime of NodeReady condition from the node annotations
+func GetRecordedNodeReadyLastTransitionTime(node *apiv1.Node) (*metav1.Time, error) {
+	annotation, found := node.Annotations[NodeReadyLastTranistionTimeAnnotationKey]
+	if !found {
+		return nil, fmt.Errorf("original NodeReady LastTransitionTime annotation not found")
+	}
+	parsedTime, err := time.Parse(time.RFC3339, annotation)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse original NodeReady LastTransitionTime annotation: %v", err)
+	}
+	return &metav1.Time{Time: parsedTime}, nil
 }

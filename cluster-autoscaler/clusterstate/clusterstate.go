@@ -626,20 +626,35 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 	perNodeGroup := make(map[string]Readiness)
 	total := Readiness{Time: currentTime}
 
+	treatNotReadyAsNotStarted := func(node *apiv1.Node, deallocateMode bool) bool {
+		var bootStartTime = node.CreationTimestamp.Time
+		if deallocateMode {
+			// Use the best guess at the start time of deallocated node (= last transition to Ready) instead.
+			// Currently it will only be recorded internally on unready Node object "faked" due to unready resources
+			// -- but this is also the only known case when NotReady is observed for deallocated nodes
+			// (which can be miscategorized as truly Unready instead of NotStarted if old creation timestamp is used)
+			if deallocatedStartTime, err := kube_util.GetRecordedNodeReadyLastTransitionTime(node); err == nil {
+				bootStartTime = deallocatedStartTime.Time
+			}
+		}
+		return bootStartTime.Add(MaxNodeStartupTime).After(currentTime)
+	}
+
 	update := func(current Readiness, node *apiv1.Node, nr kube_util.NodeReadiness, nodeGroup cloudprovider.NodeGroup) Readiness {
 		// TODO: (deallocate) Could not isolate deallocate mode logic effectively for this function.
 		policyNg, ok := nodeGroup.(deallocate.PolicyNodeGroup)
+		isDeallocateMode := nodeGroup != nil && ok && policyNg.ScaleDownPolicy() == deallocate.Deallocate
 		current.Registered = append(current.Registered, node.Name)
 		if _, isDeleted := csr.deletedNodes[node.Name]; isDeleted {
 			current.Deleted = append(current.Deleted, node.Name)
 			// Also use unreachable to account for delays in applying shutdown taint
-		} else if (nodeGroup != nil && ok && policyNg.ScaleDownPolicy() == deallocate.Deallocate) && (taints.HasShutdownTaint(node) || taints.HasUnreachableTaint(node)) {
+		} else if isDeallocateMode && (taints.HasShutdownTaint(node) || taints.HasUnreachableTaint(node)) {
 			// TODO: When removing Deallocate mode, remove this if-nest.
 			current.Deallocated = append(current.Deallocated, node.Name)
 			current.Unready = append(current.Unready, node.Name)
 		} else if nr.Ready {
 			current.Ready = append(current.Ready, node.Name)
-		} else if node.CreationTimestamp.Time.Add(MaxNodeStartupTime).After(currentTime) {
+		} else if treatNotReadyAsNotStarted(node, isDeallocateMode) {
 			current.NotStarted = append(current.NotStarted, node.Name)
 		} else {
 			current.Unready = append(current.Unready, node.Name)
