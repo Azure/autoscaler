@@ -312,7 +312,7 @@ func (tcp *TestCloudProvider) AddAutoprovisionedNodeGroup(id string, min int, ma
 	return nodeGroup
 }
 
-// AddNodeGroup adds node group to test cloud provider.
+// AddDeallocateNodeGroup adds node group to test cloud provider in deallocate mode.
 func (tcp *TestCloudProvider) AddDeallocateNodeGroup(id string, min int, max int, size int) cloudprovider.NodeGroup {
 	nodeGroup := tcp.BuildNodeGroup(id, min, max, size, true, false, "", nil, true)
 	tcp.InsertNodeGroup(nodeGroup)

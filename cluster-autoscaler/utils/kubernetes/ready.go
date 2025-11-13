@@ -157,7 +157,7 @@ func GetUnreadyNodeCopy(node *apiv1.Node, reason NodeNotReadyReason) *apiv1.Node
 	return newNode
 }
 
-// recordNodeReadyLastTransitionTime records the original LastTransitionTime of NodeReady condition as an annotation on the node
+// RecordNodeReadyLastTransitonTime records the original LastTransitionTime of NodeReady condition as an annotation on the node
 // (this is not meant to be persisted outside of CA clusterstate)
 func RecordNodeReadyLastTransitonTime(node *apiv1.Node, lastTransitionTime metav1.Time) {
 	if node.Annotations == nil {
@@ -166,7 +166,7 @@ func RecordNodeReadyLastTransitonTime(node *apiv1.Node, lastTransitionTime metav
 	node.Annotations[NodeReadyLastTranistionTimeAnnotationKey] = lastTransitionTime.Format(time.RFC3339)
 }
 
-// getRecordedNodeReadyLastTransitionTime gets the recorded original LastTransitionTime of NodeReady condition from the node annotations
+// GetRecordedNodeReadyLastTransitionTime gets the recorded original LastTransitionTime of NodeReady condition from the node annotations
 func GetRecordedNodeReadyLastTransitionTime(node *apiv1.Node) (*metav1.Time, error) {
 	annotation, found := node.Annotations[NodeReadyLastTranistionTimeAnnotationKey]
 	if !found {
