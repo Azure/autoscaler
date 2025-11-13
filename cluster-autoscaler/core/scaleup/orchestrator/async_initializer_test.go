@@ -51,8 +51,8 @@ func TestNodePoolAsyncInitialization(t *testing.T) {
 		return nil
 	}).Build()
 	pod := BuildTestPod("p1", 2, 1000)
-	failingNodeGroup := provider.BuildNodeGroup(failingNodeGroupName, 0, 100, 0, false, true, "T1", nil)
-	successfulNodeGroup := provider.BuildNodeGroup("async-ng", 0, 100, 0, false, true, "T1", nil)
+	failingNodeGroup := provider.BuildNodeGroup(failingNodeGroupName, 0, 100, 0, false, true, "T1", nil, false)
+	successfulNodeGroup := provider.BuildNodeGroup("async-ng", 0, 100, 0, false, true, "T1", nil, false)
 	failedScaleUpErr := errors.ToAutoscalerError(errors.CloudProviderError, fmt.Errorf("Simulated error")).AddPrefix("failed to increase node group size: ")
 	testCases := []struct {
 		name       string
@@ -93,7 +93,7 @@ func TestNodePoolAsyncInitialization(t *testing.T) {
 		},
 	}
 	listers := kube_util.NewListerRegistry(nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	upcomingNodeGroup := provider.BuildNodeGroup("upcoming-ng", 0, 100, 0, false, true, "T1", nil)
+	upcomingNodeGroup := provider.BuildNodeGroup("upcoming-ng", 0, 100, 0, false, true, "T1", nil, false)
 	options := config.AutoscalingOptions{AsyncNodeGroupsEnabled: true}
 	context, err := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, listers, provider, nil, nil)
 	assert.NoError(t, err)
