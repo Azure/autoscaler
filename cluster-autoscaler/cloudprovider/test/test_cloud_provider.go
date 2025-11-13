@@ -260,6 +260,7 @@ func (tcp *TestCloudProvider) BuildNodeGroup(id string, min, max, size int, exis
 	return tcp.BuildNodeGroupWithPolicy(id, min, max, size, exists, autoprovisioned, machineType, opts, deallocate.Delete)
 }
 
+// BuildNodeGroupWithPolicy returns a test node group with scale down policy.
 func (tcp *TestCloudProvider) BuildNodeGroupWithPolicy(id string, min, max, size int, exists bool, autoprovisioned bool, machineType string, opts *config.NodeGroupAutoscalingOptions, scaleDownPolicy deallocate.ScaleDownPolicy) *TestNodeGroup {
 	return &TestNodeGroup{
 		cloudProvider:   tcp,
