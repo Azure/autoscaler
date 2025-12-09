@@ -29,6 +29,9 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/component-base/config/options"
+
+	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
 	"k8s.io/autoscaler/cluster-autoscaler/debuggingsnapshot"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/predicatechecker"
@@ -66,7 +69,6 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	kube_flag "k8s.io/component-base/cli/flag"
 	componentbaseconfig "k8s.io/component-base/config"
-	"k8s.io/component-base/config/options"
 	"k8s.io/component-base/logs"
 	logsapi "k8s.io/component-base/logs/api/v1"
 	_ "k8s.io/component-base/logs/json/register"
@@ -214,8 +216,7 @@ var (
 	emitPerNodeGroupMetrics            = flag.Bool("emit-per-nodegroup-metrics", false, "If true, emit per node group metrics.")
 	debuggingSnapshotEnabled           = flag.Bool("debugging-snapshot-enabled", false, "Whether the debugging snapshot of cluster autoscaler feature is enabled")
 	nodeInfoCacheExpireTime            = flag.Duration("node-info-cache-expire-time", 87600*time.Hour, "Node Info cache expire time for each item. Default value is 10 years.")
-
-	initialNodeGroupBackoffDuration = flag.Duration("initial-node-group-backoff-duration", 5*time.Minute,
+	initialNodeGroupBackoffDuration    = flag.Duration("initial-node-group-backoff-duration", 5*time.Minute,
 		"initialNodeGroupBackoffDuration is the duration of first backoff after a new node failed to start.")
 	maxNodeGroupBackoffDuration = flag.Duration("max-node-group-backoff-duration", 30*time.Minute,
 		"maxNodeGroupBackoffDuration is the maximum backoff duration for a NodeGroup after new nodes failed to start.")
@@ -237,6 +238,19 @@ var (
 	maxFreeDifferenceRatio            = flag.Float64("max-free-difference-ratio", config.DefaultMaxFreeDifferenceRatio, "Maximum difference in free resources between two similar node groups to be considered for balancing. Value is a ratio of the smaller node group's free resource.")
 	maxAllocatableDifferenceRatio     = flag.Float64("max-allocatable-difference-ratio", config.DefaultMaxAllocatableDifferenceRatio, "Maximum difference in allocatable resources between two similar node groups to be considered for balancing. Value is a ratio of the smaller node group's allocatable resource.")
 	forceDaemonSets                   = flag.Bool("force-ds", false, "Blocks scale-up of node groups too small for all suitable Daemon Sets pods.")
+	configPath                        = flag.String("config-path", "", "The path for the mounted ConfigMap containing the settings used for dynamic reconfiguration. Set as empty string to use static mode.")
+)
+
+// fork-specific flags that are no longer functional but kept for compatibility.
+var (
+	enableForceDelete         = flag.Bool("enable-force-delete", false, "Whether to enable force deletion")
+	enableDynamicInstanceList = flag.Bool("enable-dynamic-instance-list", false, "Whether to enable dynamic instance list workflow")
+	getVmssSizeRefreshPeriod  = flag.Duration("get-vmss-size-refresh-period", 30*time.Second, "TTL for the GET VMSS cache")
+	enableDetailedCSEMessage  = flag.Bool("enable-detailed-cse-message", false, "Whether to enable emitting error messages in CSE error body")
+)
+
+var (
+	configFetcher dynamic.ConfigFetcher
 )
 
 func isFlagPassed(name string) bool {
@@ -321,7 +335,6 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 		MaxMemoryTotal:                   maxMemoryTotal,
 		MinMemoryTotal:                   minMemoryTotal,
 		GpuTotal:                         parsedGpuTotal,
-		NodeGroups:                       *nodeGroupsFlag,
 		EnforceNodeGroupMinSize:          *enforceNodeGroupMinSize,
 		ScaleDownDelayAfterAdd:           *scaleDownDelayAfterAdd,
 		ScaleDownDelayAfterDelete:        *scaleDownDelayAfterDelete,
@@ -382,6 +395,22 @@ func createAutoscalingOptions() config.AutoscalingOptions {
 			MaxAllocatableDifferenceRatio:    *maxAllocatableDifferenceRatio,
 			MaxFreeDifferenceRatio:           *maxFreeDifferenceRatio,
 		},
+		NodeGroups: func() []string {
+			// Temporary + fork only, will be removed after CA is made restartable by PUT AP and have NodeGroups passed in by flags.
+			// Will fetch from ConfigMap rather than flags for now.
+			configFetcher = dynamic.NewConfigFetcher(dynamic.ConfigFetcherOptions{
+				ConfigPath: "/opt/conf/autoscaler/settings.json",
+			})
+			if updatedConfig, err := configFetcher.FetchConfigIfUpdated(); err != nil {
+				// Ideally we want this to be fatal, but that would resulted in CrashLoopBackOff in a race condition where the configmap takes time to initialize, delaying the initialization.
+				klog.Errorf("failed to fetch updated NodeGroups config: %v, could be resulted from the configmap not initialized yet", err)
+			} else if updatedConfig != nil {
+				// First fetch is always considered updated if not empty
+				klog.V(3).Infof("Fetched NodeGroups: %v", updatedConfig.NodeGroupSpecStrings())
+				return updatedConfig.NodeGroupSpecStrings()
+			}
+			return []string{}
+		}(),
 	}
 }
 
@@ -528,6 +557,17 @@ func run(healthCheck *metrics.HealthCheck, debuggingSnapshotter debuggingsnapsho
 				metrics.UpdateLastTime(metrics.Main, loopStart)
 				healthCheck.UpdateLastActivity(loopStart)
 
+				// Temporary + fork only, will be removed after CA is made restartable by PUT AP and have NodeGroups passed in by flags.
+				// Will restart as soon as it changes to OM-induced restart + mimic passing in by flags.
+				// Expect configFetcher to be initialized. It contains the previous state to compare the difference to.
+				if updatedConfig, err := configFetcher.FetchConfigIfUpdated(); err != nil {
+					// Ideally we want this to be fatal, but that would resulted in CrashLoopBackOff in a race condition where the configmap takes time to initialize, delaying the initialization.
+					klog.Errorf("failed to fetch updated NodeGroups config: %v, could be resulted from the configmap not initialized yet", err)
+				} else if updatedConfig != nil {
+					klog.V(3).Infof("NodeGroups config has changed: %v, restarting...", updatedConfig.NodeGroupSpecStrings())
+					os.Exit(0)
+				}
+
 				err := autoscaler.RunOnce(loopStart)
 				if err != nil && err.Type() != errors.TransientError {
 					metrics.RegisterError(err)
@@ -543,6 +583,11 @@ func run(healthCheck *metrics.HealthCheck, debuggingSnapshotter debuggingsnapsho
 
 func main() {
 	klog.InitFlags(nil)
+
+	leaderElection := defaultLeaderElectionConfiguration()
+	leaderElection.LeaderElect = true
+	options.BindLeaderElectionFlags(&leaderElection, pflag.CommandLine)
+
 	featureGate := utilfeature.DefaultMutableFeatureGate
 	loggingConfig := logsapi.NewLoggingConfiguration()
 
@@ -559,10 +604,6 @@ func main() {
 	}
 
 	logs.InitLogs()
-
-	leaderElection := defaultLeaderElectionConfiguration()
-	leaderElection.LeaderElect = true
-	options.BindLeaderElectionFlags(&leaderElection, pflag.CommandLine)
 
 	healthCheck := metrics.NewHealthCheck(*maxInactivityTimeFlag, *maxFailingTimeFlag)
 

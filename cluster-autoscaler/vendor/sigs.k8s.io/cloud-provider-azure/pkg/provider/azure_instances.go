@@ -28,18 +28,11 @@ import (
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
-
 	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
 )
 
 const (
-	vmPowerStatePrefix       = "PowerState/"
-	vmPowerStateStopped      = "stopped"
-	vmPowerStateDeallocated  = "deallocated"
-	vmPowerStateDeallocating = "deallocating"
-
 	// nodeNameEnvironmentName is the environment variable name for getting node name.
 	// It is only used for out-of-tree cloud provider.
 	nodeNameEnvironmentName = "NODE_NAME"
@@ -227,6 +220,15 @@ func (az *Cloud) InstanceExists(ctx context.Context, node *v1.Node) (bool, error
 	if node == nil {
 		return false, nil
 	}
+	unmanaged, err := az.IsNodeUnmanaged(node.Name)
+	if err != nil {
+		return false, err
+	}
+	if unmanaged {
+		klog.V(4).Infof("InstanceExists: omitting unmanaged node %q", node.Name)
+		return true, nil
+	}
+
 	providerID := node.Spec.ProviderID
 	if providerID == "" {
 		var err error
@@ -287,14 +289,22 @@ func (az *Cloud) InstanceShutdownByProviderID(ctx context.Context, providerID st
 	klog.V(3).Infof("InstanceShutdownByProviderID gets provisioning state %q for node %q", provisioningState, nodeName)
 
 	status := strings.ToLower(powerStatus)
-	provisioningSucceeded := strings.EqualFold(strings.ToLower(provisioningState), strings.ToLower(string(compute.ProvisioningStateSucceeded)))
-	return provisioningSucceeded && (status == vmPowerStateStopped || status == vmPowerStateDeallocated || status == vmPowerStateDeallocating), nil
+	provisioningSucceeded := strings.EqualFold(strings.ToLower(provisioningState), strings.ToLower(string(consts.ProvisioningStateSucceeded)))
+	return provisioningSucceeded && (status == consts.VMPowerStateStopped || status == consts.VMPowerStateDeallocated || status == consts.VMPowerStateDeallocating), nil
 }
 
 // InstanceShutdown returns true if the instance is shutdown according to the cloud provider.
 // Use the node.name or node.spec.providerID field to find the node in the cloud provider.
 func (az *Cloud) InstanceShutdown(ctx context.Context, node *v1.Node) (bool, error) {
 	if node == nil {
+		return false, nil
+	}
+	unmanaged, err := az.IsNodeUnmanaged(node.Name)
+	if err != nil {
+		return false, err
+	}
+	if unmanaged {
+		klog.V(4).Infof("InstanceShutdown: omitting unmanaged node %q", node.Name)
 		return false, nil
 	}
 	providerID := node.Spec.ProviderID
@@ -492,11 +502,18 @@ func (az *Cloud) CurrentNodeName(ctx context.Context, hostname string) (types.No
 // translated into specific fields in the Node object on registration.
 // Use the node.name or node.spec.providerID field to find the node in the cloud provider.
 func (az *Cloud) InstanceMetadata(ctx context.Context, node *v1.Node) (*cloudprovider.InstanceMetadata, error) {
-	if node == nil {
-		return &cloudprovider.InstanceMetadata{}, nil
-	}
-
 	meta := cloudprovider.InstanceMetadata{}
+	if node == nil {
+		return &meta, nil
+	}
+	unmanaged, err := az.IsNodeUnmanaged(node.Name)
+	if err != nil {
+		return &meta, err
+	}
+	if unmanaged {
+		klog.V(4).Infof("InstanceMetadata: omitting unmanaged node %q", node.Name)
+		return &meta, nil
+	}
 
 	if node.Spec.ProviderID != "" {
 		meta.ProviderID = node.Spec.ProviderID

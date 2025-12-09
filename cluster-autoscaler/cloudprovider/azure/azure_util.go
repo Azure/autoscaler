@@ -18,8 +18,6 @@ package azure
 
 import (
 	"context"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -31,12 +29,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	azStorage "github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/to"
-
-	"golang.org/x/crypto/pkcs12"
 
 	"k8s.io/autoscaler/cluster-autoscaler/version"
 	klog "k8s.io/klog/v2"
@@ -62,6 +58,10 @@ const (
 	rtResourceType  = "Microsoft.Network/routeTables"
 	vmResourceType  = "Microsoft.Compute/virtualMachines"
 	vmExtensionType = "Microsoft.Compute/virtualMachines/extensions"
+
+	// CSE Extension checks
+	vmssCSEExtensionName            = "vmssCSE"
+	vmssExtensionProvisioningFailed = "VMExtensionProvisioningFailed"
 
 	// resource ids
 	nsgID = "nsgID"
@@ -180,7 +180,7 @@ func (util *AzUtil) DeleteVirtualMachine(rg string, name string) error {
 	}
 	klog.V(2).Infof("VirtualMachine %s/%s removed", rg, name)
 
-	if len(nicName) > 0 {
+	if nicName != "" {
 		klog.Infof("deleting nic: %s/%s", rg, nicName)
 		interfaceCtx, interfaceCancel := getContextWithCancel()
 		defer interfaceCancel()
@@ -224,27 +224,11 @@ func (util *AzUtil) DeleteVirtualMachine(rg string, name string) error {
 			klog.V(2).Infof("disk %s/%s removed", rg, *osDiskName)
 		}
 	}
-
 	return nil
 }
 
-// decodePkcs12 decodes a PKCS#12 client certificate by extracting the public certificate and
-// the private RSA key
-func decodePkcs12(pkcs []byte, password string) (*x509.Certificate, *rsa.PrivateKey, error) {
-	privateKey, certificate, err := pkcs12.Decode(pkcs, password)
-	if err != nil {
-		return nil, nil, fmt.Errorf("decoding the PKCS#12 client certificate: %v", err)
-	}
-	rsaPrivateKey, isRsaKey := privateKey.(*rsa.PrivateKey)
-	if !isRsaKey {
-		return nil, nil, fmt.Errorf("PKCS#12 certificate must contain a RSA private key")
-	}
-
-	return certificate, rsaPrivateKey, nil
-}
-
 func getUserAgentExtension() string {
-	return fmt.Sprintf("cluster-autoscaler/v%s", version.ClusterAutoscalerVersion)
+	return fmt.Sprintf("cluster-autoscaler-aks/v%s", version.ClusterAutoscalerVersion)
 }
 
 func configureUserAgent(client *autorest.Client) {
@@ -646,4 +630,32 @@ func vmPowerStateFromStatuses(statuses []compute.InstanceViewStatus) string {
 
 	// PowerState is not set if the VM is still creating (or has failed creation)
 	return vmPowerStateUnknown
+}
+
+func powerStateDeallocating(state string) bool {
+	return powerStateExpectedMatchesActual(vmPowerStateDeallocating, state)
+}
+func powerStateDeallocated(state string) bool {
+	return powerStateExpectedMatchesActual(vmPowerStateDeallocated, state)
+}
+func powerStateExpectedMatchesActual(expected, actual string) bool {
+	return strings.EqualFold(actual, expected)
+}
+
+// strconv.ParseInt, but for int
+func parseInt32(s string, base int) (int, error) {
+	val, err := strconv.ParseInt(s, base, 32)
+	if err != nil {
+		return 0, err
+	}
+	return int(val), nil
+}
+
+// strconv.ParseFloat, but for float32
+func parseFloat32(s string) (float32, error) {
+	val, err := strconv.ParseFloat(s, 32)
+	if err != nil {
+		return 0, err
+	}
+	return float32(val), nil
 }

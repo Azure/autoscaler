@@ -1,0 +1,2 @@
+# This file needs to be ignored if ran golinter in azure in pipeline mode.
+junit.xml

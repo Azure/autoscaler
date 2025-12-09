@@ -116,6 +116,7 @@ func SanitizeNode(node *apiv1.Node, nodeGroup string, taintConfig taints.TaintCo
 		}
 	}
 	newNode.Name = nodeName
+
 	newNode.Spec.Taints = taints.SanitizeTaints(newNode.Spec.Taints, taintConfig)
 	return newNode, nil
 }

@@ -141,3 +141,7 @@ type PodEvictionResult struct {
 func (per PodEvictionResult) WasEvictionSuccessful() bool {
 	return per.Err == nil && !per.TimedOut
 }
+
+func (result ScaleDownResult) String() string {
+	return [...]string{"ScaleDownError", "ScaleDownNoUnneeded", "ScaleDownNoNodeDeleted", "ScaleDownNodeDeleteStarted", "ScaleDownNotTried", "ScaleDownInCooldown", "ScaleDownInProgress"}[result]
+}

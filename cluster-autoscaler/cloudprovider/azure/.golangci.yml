@@ -1,0 +1,155 @@
+linters-settings:
+  depguard:
+    rules:
+      # logging is allowed only by logutils.Log, logrus
+      # is allowed to use only in logutils package
+      prevent_logrus:
+        list-mode: lax # allow unless explicitly denied
+        deny:
+          - pkg: github.com/sirupsen/logrus
+            desc: "logging is allowed only by logutils.Log"
+  dupl:
+    threshold: 100
+  funlen:
+    lines: 100
+    statements: 50
+  goconst:
+    min-len: 2
+    min-occurrences: 3
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+    disabled-checks:
+      - dupImport # https://github.com/go-critic/go-critic/issues/845
+      - ifElseChain
+      - octalLiteral
+      - whyNoLint
+      - wrapperFunc
+  gocyclo:
+    min-complexity: 20
+  goimports:
+    local-prefixes: k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure
+  govet:
+    check-shadowing: true
+    settings:
+      printf:
+        funcs:
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Infof
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Warnf
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Errorf
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
+  lll:
+    line-length: 140
+  misspell:
+    locale: US
+  nolintlint:
+    allow-unused: false # report any unused nolint directives
+    require-explanation: false # don't require an explanation for nolint directives
+    require-specific: false # don't require nolint directives to be specific about which linter is being skipped
+
+linters:
+  disable-all: true
+  enable:
+    - bodyclose
+    - depguard
+    - dogsled
+    - dupl
+    - errcheck
+    - exportloopref
+    - funlen
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gocyclo
+    - gofmt
+    - goimports
+    - goprintffuncname
+    - gosec
+    - gosimple
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - noctx
+    - staticcheck
+    - stylecheck
+    - typecheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+
+  # don't enable:
+  # - asciicheck
+  # - scopelint
+  # - gomnd
+  # - gochecknoglobals
+  # - gocognit
+  # - godot
+  # - godox
+  # - goerr113
+  # - interfacer
+  # - maligned
+  # - nestif
+  # - prealloc
+  # - testpackage
+  # - revive
+  # - wsl
+  # - structcheck - https://github.com/golangci/golangci-lint/issues/1841 (deprecated)
+  # - deadcode - deprecated (since v1.49.0) due to: The owner seems to have abandoned the linter
+  # - varcheck - deprecated (since v1.49.0) due to: The owner seems to have abandoned the linter
+
+issues:
+  # Excluding configuration per-path, per-linter, per-text and per-source
+  exclude-rules:
+    # https://github.com/go-critic/go-critic/issues/926
+    - linters:
+        - gocritic
+      text: "unnecessaryDefer:"
+
+    # tests can be more readable with long procedures over jumping between funcs
+    - path: _test\.go
+      linters:
+        - funlen
+
+    # use of init() in this test file is essential
+    - path: azure_scale_set_test.go
+      linters:
+        - gochecknoinits
+
+    # it's okay to use math/rand instead of crypto/rand when speed matters more than safety (often in tests)
+    - linters:
+        - gosec
+      text: "Use of weak random number generator"
+
+    # this is a test-case for which we need error message to be capitalized.
+    - path: azure_kubernetes_service_pool_test.go
+      text: "ST1005: error strings should not be capitalized"
+
+    # NodeGroup() has Id() as a method.
+    - path: azure_scale_set.go
+      text: "ST1003: method Id should be ID"
+    - path: azure_agent_pool.go
+      text: "ST1003: method Id should be ID"
+    - path: azure_kubernetes_service_pool.go
+      text: "ST1003: method Id should be ID"
+
+    # opts cannot be passed as pointer here to avoid changes in files other than azure/.
+    - path: azure_cloud_provider.go
+      text: "hugeParam"
+
+run:
+  skip-dirs:
+    - vendor
+
+# golangci.com configuration
+# https://github.com/golangci/golangci/wiki/Configuration
+service:
+  golangci-lint-version: 1.52.x # use the fixed version to not introduce new linters unexpectedly
+  prepare:
+    - echo "here I can run custom commands, but no preparation needed for this repo"

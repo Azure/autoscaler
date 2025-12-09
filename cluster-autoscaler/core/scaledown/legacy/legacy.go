@@ -37,7 +37,7 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	klog "k8s.io/klog/v2"
+	"k8s.io/klog/v2"
 )
 
 // ScaleDown is responsible for maintaining the state needed to perform unneeded node removals.

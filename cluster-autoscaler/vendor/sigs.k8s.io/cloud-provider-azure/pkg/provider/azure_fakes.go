@@ -24,7 +24,6 @@ import (
 
 	"github.com/golang/mock/gomock"
 
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/diskclient/mockdiskclient"
@@ -41,6 +40,7 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssclient/mockvmssclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssvmclient/mockvmssvmclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
+	utilsets "sigs.k8s.io/cloud-provider-azure/pkg/util/sets"
 )
 
 var (
@@ -96,12 +96,12 @@ func GetTestCloud(ctrl *gomock.Controller) (az *Cloud) {
 			VMType:                                   consts.VMTypeStandard,
 			LoadBalancerBackendPoolConfigurationType: consts.LoadBalancerBackendPoolConfigurationTypeNodeIPConfiguration,
 		},
-		nodeZones:                map[string]sets.String{},
+		nodeZones:                map[string]*utilsets.IgnoreCaseSet{},
 		nodeInformerSynced:       func() bool { return true },
 		nodeResourceGroups:       map[string]string{},
-		unmanagedNodes:           sets.NewString(),
-		excludeLoadBalancerNodes: sets.NewString(),
-		nodePrivateIPs:           map[string]sets.String{},
+		unmanagedNodes:           utilsets.NewString(),
+		excludeLoadBalancerNodes: utilsets.NewString(),
+		nodePrivateIPs:           map[string]*utilsets.IgnoreCaseSet{},
 		routeCIDRs:               map[string]string{},
 		eventRecorder:            &record.FakeRecorder{},
 	}
@@ -126,6 +126,7 @@ func GetTestCloud(ctrl *gomock.Controller) (az *Cloud) {
 	az.pipCache, _ = az.newPIPCache()
 	az.plsCache, _ = az.newPLSCache()
 	az.LoadBalancerBackendPool = NewMockBackendPool(ctrl)
+	az.storageAccountCache, _ = az.newStorageAccountCache()
 
 	_ = initDiskControllers(az)
 
@@ -139,9 +140,5 @@ func GetTestCloudWithExtendedLocation(ctrl *gomock.Controller) (az *Cloud) {
 	az = GetTestCloud(ctrl)
 	az.Config.ExtendedLocationName = "microsoftlosangeles1"
 	az.Config.ExtendedLocationType = "EdgeZone"
-	az.controllerCommon.extendedLocation = &ExtendedLocation{
-		Name: az.Config.ExtendedLocationName,
-		Type: az.Config.ExtendedLocationType,
-	}
 	return az
 }

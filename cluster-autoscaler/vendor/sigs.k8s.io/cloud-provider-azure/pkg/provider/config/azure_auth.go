@@ -17,8 +17,6 @@ limitations under the License.
 package config
 
 import (
-	"crypto/rsa"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -29,8 +27,6 @@ import (
 
 	"github.com/Azure/go-autorest/autorest/adal"
 	"github.com/Azure/go-autorest/autorest/azure"
-
-	"golang.org/x/crypto/pkcs12"
 
 	"k8s.io/klog/v2"
 
@@ -78,6 +74,10 @@ type AzureAuthConfig struct {
 	NetworkResourceTenantID string `json:"networkResourceTenantID,omitempty" yaml:"networkResourceTenantID,omitempty"`
 	// The ID of the Azure Subscription that the network resources are deployed in
 	NetworkResourceSubscriptionID string `json:"networkResourceSubscriptionID,omitempty" yaml:"networkResourceSubscriptionID,omitempty"`
+	// The AAD federated token file
+	AADFederatedTokenFile string `json:"aadFederatedTokenFile,omitempty" yaml:"aadFederatedTokenFile,omitempty"`
+	// Use workload identity federation for the virtual machine to access Azure ARM APIs
+	UseFederatedWorkloadIdentityExtension bool `json:"useFederatedWorkloadIdentityExtension,omitempty" yaml:"useFederatedWorkloadIdentityExtension,omitempty"`
 }
 
 // GetServicePrincipalToken creates a new service principal token based on the configuration.
@@ -98,6 +98,28 @@ func GetServicePrincipalToken(config *AzureAuthConfig, env *azure.Environment, r
 
 	if resource == "" {
 		resource = env.ServiceManagementEndpoint
+	}
+
+	if config.UseFederatedWorkloadIdentityExtension {
+		klog.V(2).Infoln("azure: using workload identity extension to retrieve access token")
+		oauthConfig, err := adal.NewOAuthConfigWithAPIVersion(env.ActiveDirectoryEndpoint, config.TenantID, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create the OAuth config: %w", err)
+		}
+
+		jwtCallback := func() (string, error) {
+			jwt, err := os.ReadFile(config.AADFederatedTokenFile)
+			if err != nil {
+				return "", fmt.Errorf("failed to read a file with a federated token: %w", err)
+			}
+			return string(jwt), nil
+		}
+
+		token, err := adal.NewServicePrincipalTokenFromFederatedTokenCallback(*oauthConfig, config.AADClientID, jwtCallback, env.ResourceManagerEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create a workload identity token: %w", err)
+		}
+		return token, nil
 	}
 
 	if config.UseManagedIdentityExtension {
@@ -143,13 +165,13 @@ func GetServicePrincipalToken(config *AzureAuthConfig, env *azure.Environment, r
 			resource)
 	}
 
-	if len(config.AADClientCertPath) > 0 && len(config.AADClientCertPassword) > 0 {
+	if len(config.AADClientCertPath) > 0 {
 		klog.V(2).Infoln("azure: using jwt client_assertion (client_cert+client_private_key) to retrieve access token")
 		certData, err := os.ReadFile(config.AADClientCertPath)
 		if err != nil {
 			return nil, fmt.Errorf("reading the client certificate from file %s: %w", config.AADClientCertPath, err)
 		}
-		certificate, privateKey, err := decodePkcs12(certData, config.AADClientCertPassword)
+		certificate, privateKey, err := adal.DecodePfxCertificateData(certData, config.AADClientCertPassword)
 		if err != nil {
 			return nil, fmt.Errorf("decoding the client certificate: %w", err)
 		}
@@ -193,8 +215,22 @@ func GetMultiTenantServicePrincipalToken(config *AzureAuthConfig, env *azure.Env
 			env.ServiceManagementEndpoint)
 	}
 
-	if len(config.AADClientCertPath) > 0 && len(config.AADClientCertPassword) > 0 {
-		return nil, fmt.Errorf("AAD Application client certificate authentication is not supported in getting multi-tenant service principal token")
+	if len(config.AADClientCertPath) > 0 {
+		klog.V(2).Infoln("azure: using jwt client_assertion (client_cert+client_private_key) to retrieve multi-tenant access token")
+		certData, err := os.ReadFile(config.AADClientCertPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading the client certificate from file %s: %w", config.AADClientCertPath, err)
+		}
+		certificate, privateKey, err := adal.DecodePfxCertificateData(certData, config.AADClientCertPassword)
+		if err != nil {
+			return nil, fmt.Errorf("decoding the client certificate: %w", err)
+		}
+		return adal.NewMultiTenantServicePrincipalTokenFromCertificate(
+			multiTenantOAuthConfig,
+			config.AADClientID,
+			certificate,
+			privateKey,
+			env.ServiceManagementEndpoint)
 	}
 
 	return nil, ErrorNoAuth
@@ -226,8 +262,22 @@ func GetNetworkResourceServicePrincipalToken(config *AzureAuthConfig, env *azure
 			env.ServiceManagementEndpoint)
 	}
 
-	if len(config.AADClientCertPath) > 0 && len(config.AADClientCertPassword) > 0 {
-		return nil, fmt.Errorf("AAD Application client certificate authentication is not supported in getting network resources service principal token")
+	if len(config.AADClientCertPath) > 0 {
+		klog.V(2).Infoln("azure: using jwt client_assertion (client_cert+client_private_key) to retrieve access token for network resources tenant")
+		certData, err := os.ReadFile(config.AADClientCertPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading the client certificate from file %s: %w", config.AADClientCertPath, err)
+		}
+		certificate, privateKey, err := adal.DecodePfxCertificateData(certData, config.AADClientCertPassword)
+		if err != nil {
+			return nil, fmt.Errorf("decoding the client certificate: %w", err)
+		}
+		return adal.NewServicePrincipalTokenFromCertificate(
+			*oauthConfig,
+			config.AADClientID,
+			certificate,
+			privateKey,
+			env.ServiceManagementEndpoint)
 	}
 
 	return nil, ErrorNoAuth
@@ -297,21 +347,6 @@ func (config *AzureAuthConfig) UsesNetworkResourceInDifferentTenant() bool {
 // and not equal to one defined in global configs
 func (config *AzureAuthConfig) UsesNetworkResourceInDifferentSubscription() bool {
 	return len(config.NetworkResourceSubscriptionID) > 0 && !strings.EqualFold(config.NetworkResourceSubscriptionID, config.SubscriptionID)
-}
-
-// decodePkcs12 decodes a PKCS#12 client certificate by extracting the public certificate and
-// the private RSA key
-func decodePkcs12(pkcs []byte, password string) (*x509.Certificate, *rsa.PrivateKey, error) {
-	privateKey, certificate, err := pkcs12.Decode(pkcs, password)
-	if err != nil {
-		return nil, nil, fmt.Errorf("decoding the PKCS#12 client certificate: %w", err)
-	}
-	rsaPrivateKey, isRsaKey := privateKey.(*rsa.PrivateKey)
-	if !isRsaKey {
-		return nil, nil, fmt.Errorf("PKCS#12 certificate must contain a RSA private key")
-	}
-
-	return certificate, rsaPrivateKey, nil
 }
 
 // azureStackOverrides ensures that the Environment matches what AKSe currently generates for Azure Stack
