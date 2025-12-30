@@ -17,8 +17,11 @@ limitations under the License.
 package virtualmachine
 
 import (
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
-	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
+
+	"k8s.io/utils/pointer"
+
+	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
 )
 
 type Variant string
@@ -79,12 +82,12 @@ func FromVirtualMachine(vm *compute.VirtualMachine, opt ...ManageOption) *Virtua
 		vm:      vm,
 		Variant: VariantVirtualMachine,
 
-		ID:        to.String(vm.ID),
-		Name:      to.String(vm.Name),
-		Type:      to.String(vm.Type),
-		Location:  to.String(vm.Location),
-		Tags:      to.StringMap(vm.Tags),
-		Zones:     to.StringSlice(vm.Zones),
+		ID:        pointer.StringDeref(vm.ID, ""),
+		Name:      pointer.StringDeref(vm.Name, ""),
+		Type:      pointer.StringDeref(vm.Type, ""),
+		Location:  pointer.StringDeref(vm.Location, ""),
+		Tags:      stringMap(vm.Tags),
+		Zones:     stringSlice(vm.Zones),
 		Plan:      vm.Plan,
 		Resources: vm.Resources,
 
@@ -104,17 +107,17 @@ func FromVirtualMachineScaleSetVM(vm *compute.VirtualMachineScaleSetVM, opt Mana
 		Variant: VariantVirtualMachineScaleSetVM,
 		vmssVM:  vm,
 
-		ID:        to.String(vm.ID),
-		Name:      to.String(vm.Name),
-		Type:      to.String(vm.Type),
-		Location:  to.String(vm.Location),
-		Tags:      to.StringMap(vm.Tags),
-		Zones:     to.StringSlice(vm.Zones),
+		ID:        pointer.StringDeref(vm.ID, ""),
+		Name:      pointer.StringDeref(vm.Name, ""),
+		Type:      pointer.StringDeref(vm.Type, ""),
+		Location:  pointer.StringDeref(vm.Location, ""),
+		Tags:      stringMap(vm.Tags),
+		Zones:     stringSlice(vm.Zones),
 		Plan:      vm.Plan,
 		Resources: vm.Resources,
 
 		SKU:                                vm.Sku,
-		InstanceID:                         to.String(vm.InstanceID),
+		InstanceID:                         pointer.StringDeref(vm.InstanceID, ""),
 		VirtualMachineScaleSetVMProperties: vm.VirtualMachineScaleSetVMProperties,
 	}
 
@@ -143,4 +146,57 @@ func (vm *VirtualMachine) AsVirtualMachine() *compute.VirtualMachine {
 
 func (vm *VirtualMachine) AsVirtualMachineScaleSetVM() *compute.VirtualMachineScaleSetVM {
 	return vm.vmssVM
+}
+
+func (vm *VirtualMachine) GetInstanceViewStatus() *[]compute.InstanceViewStatus {
+	if vm.IsVirtualMachine() && vm.vm != nil &&
+		vm.vm.VirtualMachineProperties != nil &&
+		vm.vm.VirtualMachineProperties.InstanceView != nil {
+		return vm.vm.VirtualMachineProperties.InstanceView.Statuses
+	}
+	if vm.IsVirtualMachineScaleSetVM() &&
+		vm.vmssVM != nil &&
+		vm.vmssVM.VirtualMachineScaleSetVMProperties != nil &&
+		vm.vmssVM.VirtualMachineScaleSetVMProperties.InstanceView != nil {
+		return vm.vmssVM.VirtualMachineScaleSetVMProperties.InstanceView.Statuses
+	}
+	return nil
+}
+
+func (vm *VirtualMachine) GetProvisioningState() string {
+	if vm.IsVirtualMachine() && vm.vm != nil &&
+		vm.vm.VirtualMachineProperties != nil &&
+		vm.vm.VirtualMachineProperties.ProvisioningState != nil {
+		return *vm.vm.VirtualMachineProperties.ProvisioningState
+	}
+	if vm.IsVirtualMachineScaleSetVM() &&
+		vm.vmssVM != nil &&
+		vm.vmssVM.VirtualMachineScaleSetVMProperties != nil &&
+		vm.vmssVM.VirtualMachineScaleSetVMProperties.ProvisioningState != nil {
+		return *vm.vmssVM.VirtualMachineScaleSetVMProperties.ProvisioningState
+	}
+	return consts.ProvisioningStateUnknown
+}
+
+// StringMap returns a map of strings built from the map of string pointers. The empty string is
+// used for nil pointers.
+func stringMap(msp map[string]*string) map[string]string {
+	ms := make(map[string]string, len(msp))
+	for k, sp := range msp {
+		if sp != nil {
+			ms[k] = *sp
+		} else {
+			ms[k] = ""
+		}
+	}
+	return ms
+}
+
+// stringSlice returns a string slice value for the passed string slice pointer. It returns a nil
+// slice if the pointer is nil.
+func stringSlice(s *[]string) []string {
+	if s != nil {
+		return *s
+	}
+	return nil
 }

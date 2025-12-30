@@ -22,13 +22,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
-	"github.com/Azure/go-autorest/autorest/to"
 
 	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/pointer"
 
 	azclients "sigs.k8s.io/cloud-provider-azure/pkg/azureclients"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/armclient"
@@ -207,7 +207,7 @@ func (c *Client) listVMSS(ctx context.Context, resourceGroupName string) ([]comp
 		result = append(result, page.Values()...)
 
 		// Abort the loop when there's no nextLink in the response.
-		if to.String(page.Response().NextLink) == "" {
+		if pointer.StringDeref(page.Response().NextLink, "") == "" {
 			break
 		}
 
@@ -366,12 +366,12 @@ func (c *Client) listResponder(resp *http.Response) (result compute.VirtualMachi
 // virtualMachineScaleSetListResultPreparer prepares a request to retrieve the next set of results.
 // It returns nil if no more results exist.
 func (c *Client) virtualMachineScaleSetListResultPreparer(ctx context.Context, vmsslr compute.VirtualMachineScaleSetListResult) (*http.Request, error) {
-	if vmsslr.NextLink == nil || len(to.String(vmsslr.NextLink)) < 1 {
+	if vmsslr.NextLink == nil || len(pointer.StringDeref(vmsslr.NextLink, "")) < 1 {
 		return nil, nil
 	}
 
 	decorators := []autorest.PrepareDecorator{
-		autorest.WithBaseURL(to.String(vmsslr.NextLink)),
+		autorest.WithBaseURL(pointer.StringDeref(vmsslr.NextLink, "")),
 	}
 	return c.armClient.PrepareGetRequest(ctx, decorators...)
 }
@@ -474,7 +474,7 @@ func (c *Client) DeleteInstances(ctx context.Context, resourceGroupName string, 
 	return nil
 }
 
-// DeleteInstancesAsync sends the delete request to ARM client and DOEST NOT wait on the future
+// DeleteInstancesAsync sends the delete request to ARM client and DOES NOT wait on the future
 func (c *Client) DeleteInstancesAsync(ctx context.Context, resourceGroupName string, vmScaleSetName string, vmInstanceIDs compute.VirtualMachineScaleSetVMInstanceRequiredIDs, forceDelete bool) (*azure.Future, *retry.Error) {
 	mc := metrics.NewMetricContext("vmss", "delete_instances_async", resourceGroupName, c.subscriptionID, "")
 
@@ -529,7 +529,7 @@ func (c *Client) DeleteInstancesAsync(ctx context.Context, resourceGroupName str
 	return &future, nil
 }
 
-// DeallocateInstancesAsync sends the deallocate request to ARM client and DOEST NOT wait on the future
+// DeallocateInstancesAsync sends the deallocate request to ARM client and DOES NOT wait on the future
 func (c *Client) DeallocateInstancesAsync(ctx context.Context, resourceGroupName string, vmScaleSetName string, vmInstanceIDs compute.VirtualMachineScaleSetVMInstanceRequiredIDs) (*azure.Future, *retry.Error) {
 	mc := metrics.NewMetricContext("vmss", "deallocate_instances_async", resourceGroupName, c.subscriptionID, "")
 
@@ -578,7 +578,7 @@ func (c *Client) DeallocateInstancesAsync(ctx context.Context, resourceGroupName
 	return &future, nil
 }
 
-// StartInstancesAsync sends the start request to ARM client and DOEST NOT wait on the future
+// StartInstancesAsync sends the start request to ARM client and DOES NOT wait on the future
 func (c *Client) StartInstancesAsync(ctx context.Context, resourceGroupName string, vmScaleSetName string, vmInstanceIDs compute.VirtualMachineScaleSetVMInstanceRequiredIDs) (*azure.Future, *retry.Error) {
 	mc := metrics.NewMetricContext("vmss", "start_instances_async", resourceGroupName, c.subscriptionID, "")
 

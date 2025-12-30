@@ -149,9 +149,10 @@ func (e *scaleUpExecutor) executeScaleUp(
 		"Scale-up: setting group %s size to %d instead of %d (max: %d)", info.Group.Id(), info.NewSize, info.CurrentSize, info.MaxSize)
 	increase := info.NewSize - info.CurrentSize
 	if err := info.Group.IncreaseSize(increase); err != nil {
-		e.autoscalingContext.LogRecorder.Eventf(apiv1.EventTypeWarning, "FailedToScaleUpGroup", "Scale-up failed for group %s: %v", info.Group.Id(), err)
+		e.autoscalingContext.LogRecorder.Eventf(apiv1.EventTypeWarning, "FailedToScaleUpGroup",
+			"Scale-up failed for group %s: %v", info.Group.Id(), err)
 		aerr := errors.ToAutoscalerError(errors.CloudProviderError, err).AddPrefix("failed to increase node group size: ")
-		e.clusterStateRegistry.RegisterFailedScaleUp(info.Group, metrics.FailedScaleUpReason(string(aerr.Type())), gpuResourceName, gpuType, now)
+		e.clusterStateRegistry.RegisterFailedScaleUp(info.Group, string(aerr.Type()), aerr.Error(), gpuResourceName, gpuType, now)
 		return aerr
 	}
 	e.clusterStateRegistry.RegisterOrUpdateScaleUp(

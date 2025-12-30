@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/api"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
@@ -37,9 +38,8 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
-
 	klog "k8s.io/klog/v2"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 const (
@@ -268,6 +268,7 @@ func (csr *ClusterStateRegistry) updateScaleRequests(currentTime time.Time) {
 			csr.logRecorder.Eventf(apiv1.EventTypeWarning, "ScaleUpTimedOut",
 				"Nodes added to group %s failed to register within %v",
 				scaleUpRequest.NodeGroup.Id(), currentTime.Sub(scaleUpRequest.Time))
+
 			availableGPUTypes := csr.cloudProvider.GetAvailableGPUTypes()
 			gpuResource, gpuType := "", ""
 			nodeInfo, err := scaleUpRequest.NodeGroup.TemplateNodeInfo()
@@ -276,7 +277,12 @@ func (csr *ClusterStateRegistry) updateScaleRequests(currentTime time.Time) {
 			} else {
 				gpuResource, gpuType = gpu.GetGpuInfoForMetrics(csr.cloudProvider.GetNodeGpuConfig(nodeInfo.Node()), availableGPUTypes, nodeInfo.Node(), scaleUpRequest.NodeGroup)
 			}
-			csr.registerFailedScaleUpNoLock(scaleUpRequest.NodeGroup, metrics.Timeout, cloudprovider.OtherErrorClass, "timeout", gpuResource, gpuType, currentTime)
+
+			csr.registerFailedScaleUpNoLock(scaleUpRequest.NodeGroup, metrics.Timeout, cloudprovider.InstanceErrorInfo{
+				ErrorClass:   cloudprovider.OtherErrorClass,
+				ErrorCode:    "timeout",
+				ErrorMessage: fmt.Sprintf("Scale-up timed out for node group %v after %v", nodeGroupName, currentTime.Sub(scaleUpRequest.Time)),
+			}, gpuResource, gpuType, currentTime)
 			delete(csr.scaleUpRequests, nodeGroupName)
 		}
 	}
@@ -300,16 +306,20 @@ func (csr *ClusterStateRegistry) backoffNodeGroup(nodeGroup cloudprovider.NodeGr
 // RegisterFailedScaleUp should be called after getting error from cloudprovider
 // when trying to scale-up node group. It will mark this group as not safe to autoscale
 // for some time.
-func (csr *ClusterStateRegistry) RegisterFailedScaleUp(nodeGroup cloudprovider.NodeGroup, reason metrics.FailedScaleUpReason, gpuResourceName, gpuType string, currentTime time.Time) {
+func (csr *ClusterStateRegistry) RegisterFailedScaleUp(nodeGroup cloudprovider.NodeGroup, reason string, errorMessage, gpuResourceName, gpuType string, currentTime time.Time) {
 	csr.Lock()
 	defer csr.Unlock()
-	csr.registerFailedScaleUpNoLock(nodeGroup, reason, cloudprovider.OtherErrorClass, string(reason), gpuResourceName, gpuType, currentTime)
+	csr.registerFailedScaleUpNoLock(nodeGroup, metrics.FailedScaleUpReason(reason), cloudprovider.InstanceErrorInfo{
+		ErrorClass:   cloudprovider.OtherErrorClass,
+		ErrorCode:    string(reason),
+		ErrorMessage: errorMessage,
+	}, gpuResourceName, gpuType, currentTime)
 }
 
-func (csr *ClusterStateRegistry) registerFailedScaleUpNoLock(nodeGroup cloudprovider.NodeGroup, reason metrics.FailedScaleUpReason, errorClass cloudprovider.InstanceErrorClass, errorCode string, gpuResourceName, gpuType string, currentTime time.Time) {
+func (csr *ClusterStateRegistry) registerFailedScaleUpNoLock(nodeGroup cloudprovider.NodeGroup, reason metrics.FailedScaleUpReason, errorInfo cloudprovider.InstanceErrorInfo, gpuResourceName, gpuType string, currentTime time.Time) {
 	csr.scaleUpFailures[nodeGroup.Id()] = append(csr.scaleUpFailures[nodeGroup.Id()], ScaleUpFailure{NodeGroup: nodeGroup, Reason: reason, Time: currentTime})
 	metrics.RegisterFailedScaleUp(reason, gpuResourceName, gpuType)
-	csr.backoffNodeGroup(nodeGroup, errorClass, errorCode, currentTime)
+	csr.backoffNodeGroup(nodeGroup, errorInfo.ErrorClass, errorInfo.ErrorMessage, currentTime)
 }
 
 // UpdateNodes updates the state of the nodes in the ClusterStateRegistry and recalculates the stats
@@ -379,8 +389,17 @@ func getTargetSizes(cp cloudprovider.CloudProvider) (map[string]int, error) {
 func (csr *ClusterStateRegistry) IsClusterHealthy() bool {
 	csr.Lock()
 	defer csr.Unlock()
-
 	totalUnready := len(csr.totalReadiness.Unready)
+
+	// Deallocate mode specific check
+	// Do not consider deallocated nodes in the cluster health check
+	// Those nodes will always exist in NotReady state
+	totalUnready = csr.calcDeallocationNodes(totalUnready, csr.totalReadiness.Unready)
+	// This shouldn't happen but if it doesn assume healthy
+	if totalUnready < 0 {
+		klog.Warningf("Delta is negative - assuming cluster is healthy")
+		return true
+	}
 
 	if totalUnready > csr.config.OkTotalUnreadyCount &&
 		float64(totalUnready) > csr.config.MaxTotalUnreadyPercentage/100.0*float64(len(csr.nodes)) {
@@ -443,7 +462,7 @@ func (csr *ClusterStateRegistry) updateNodeGroupMetrics() {
 
 // IsNodeGroupSafeToScaleUp returns true if node group can be scaled up now.
 func (csr *ClusterStateRegistry) IsNodeGroupSafeToScaleUp(nodeGroup cloudprovider.NodeGroup, now time.Time) bool {
-	if !csr.IsNodeGroupHealthy(nodeGroup.Id()) {
+	if !csr.IsNodeGroupHealthy(nodeGroup.Id()) && !csr.IsNodeGroupHealthyDeallocate(nodeGroup) {
 		return false
 	}
 	return !csr.backoff.IsBackedOff(nodeGroup, csr.nodeInfosForGroups[nodeGroup.Id()], now)
@@ -557,6 +576,8 @@ type Readiness struct {
 	LongUnregistered []string
 	// Names of nodes that haven't yet registered.
 	Unregistered []string
+	// Number of deallocated nodes that exist in K8s
+	Deallocated []string
 	// Time when the readiness was measured.
 	Time time.Time
 	// Names of nodes that are Unready due to missing resources.
@@ -569,10 +590,17 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 	perNodeGroup := make(map[string]Readiness)
 	total := Readiness{Time: currentTime}
 
-	update := func(current Readiness, node *apiv1.Node, nr kube_util.NodeReadiness) Readiness {
+	update := func(current Readiness, node *apiv1.Node, nr kube_util.NodeReadiness, nodeGroup cloudprovider.NodeGroup) Readiness {
+		// TODO: (deallocate) Could not isolate deallocate mode logic effectively for this function.
+		policyNg, ok := nodeGroup.(deallocate.PolicyNodeGroup)
 		current.Registered = append(current.Registered, node.Name)
 		if _, isDeleted := csr.deletedNodes[node.Name]; isDeleted {
 			current.Deleted = append(current.Deleted, node.Name)
+			// Also use unreachable to account for delays in applying shutdown taint
+		} else if (nodeGroup != nil && ok && policyNg.ScaleDownPolicy() == deallocate.Deallocate) && (taints.HasShutdownTaint(node) || taints.HasUnreachableTaint(node)) {
+			// TODO: When removing Deallocate mode, remove this if-nest.
+			current.Deallocated = append(current.Deallocated, node.Name)
+			current.Unready = append(current.Unready, node.Name)
 		} else if nr.Ready {
 			current.Ready = append(current.Ready, node.Name)
 		} else if node.CreationTimestamp.Time.Add(MaxNodeStartupTime).After(currentTime) {
@@ -599,9 +627,9 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 				klog.Warningf("Failed to get readiness info for %s: %v", node.Name, errReady)
 			}
 		} else {
-			perNodeGroup[nodeGroup.Id()] = update(perNodeGroup[nodeGroup.Id()], node, nr)
+			perNodeGroup[nodeGroup.Id()] = update(perNodeGroup[nodeGroup.Id()], node, nr, nodeGroup)
 		}
-		total = update(total, node, nr)
+		total = update(total, node, nr, nodeGroup)
 	}
 
 	for _, unregistered := range csr.unregisteredNodes {
@@ -691,6 +719,30 @@ func (csr *ClusterStateRegistry) updateUnregisteredNodes(unregisteredNodes []Unr
 	csr.unregisteredNodes = result
 }
 
+// RemoveUnregisteredNodesFromList removes given nodes from the list of unregistered nodes
+func (csr *ClusterStateRegistry) RemoveUnregisteredNodesFromList(unregisteredNodesToRemove []UnregisteredNode) {
+	for _, node := range unregisteredNodesToRemove {
+		csr.RemoveUnregisteredNodeFromList(node)
+	}
+}
+
+// RemoveUnregisteredNodeFromList removes a given unregistered node from the list of unregistered nodes
+func (csr *ClusterStateRegistry) RemoveUnregisteredNodeFromList(unregisteredNodeToRemove UnregisteredNode) {
+	csr.Lock()
+	defer csr.Unlock()
+	result := make(map[string]UnregisteredNode)
+	for _, unregistered := range csr.unregisteredNodes {
+		if unregistered.Node.Name == unregisteredNodeToRemove.Node.Name {
+			klog.V(5).Infof("Removing unregistered node %s from the cluster state registry", unregistered.Node.Name)
+			continue
+		} else {
+			klog.V(5).Infof("Adding unregistered node %s to the cluster state registry", unregistered.Node.Name)
+			result[unregistered.Node.Name] = unregistered
+		}
+	}
+	csr.unregisteredNodes = result
+}
+
 // GetUnregisteredNodes returns a list of all unregistered nodes.
 func (csr *ClusterStateRegistry) GetUnregisteredNodes() []UnregisteredNode {
 	csr.Lock()
@@ -745,7 +797,7 @@ func (csr *ClusterStateRegistry) GetStatus(now time.Time) *api.ClusterAutoscaler
 
 		// Health.
 		nodeGroupStatus.Conditions = append(nodeGroupStatus.Conditions, buildHealthStatusNodeGroup(
-			csr.IsNodeGroupHealthy(nodeGroup.Id()), readiness, acceptable, nodeGroup.MinSize(), nodeGroup.MaxSize()))
+			csr.IsNodeGroupHealthy(nodeGroup.Id()) || csr.IsNodeGroupHealthyDeallocate(nodeGroup), readiness, acceptable, nodeGroup.MinSize(), nodeGroup.MaxSize()))
 
 		// Scale up.
 		nodeGroupStatus.Conditions = append(nodeGroupStatus.Conditions, buildScaleUpStatusNodeGroup(
@@ -958,10 +1010,22 @@ func (csr *ClusterStateRegistry) GetUpcomingNodes() (upcomingCounts map[string]i
 	registeredNodeNames = map[string][]string{}
 	for _, nodeGroup := range csr.cloudProvider.NodeGroups() {
 		id := nodeGroup.Id()
+		policyNg, ok := nodeGroup.(deallocate.PolicyNodeGroup)
+
 		readiness := csr.perNodeGroupReadiness[id]
 		ar := csr.acceptableRanges[id]
 		// newNodes is the number of nodes that
 		newNodes := ar.CurrentTarget - (len(readiness.Ready) + len(readiness.Unready) + len(readiness.LongUnregistered))
+
+		// Deallocate-specific calculation
+		if ok && policyNg.ScaleDownPolicy() == deallocate.Deallocate {
+			// newNodes are the upcoming nodes. This is the TargetSize (goal state of the nodegroup) subtracted from (the current ready nodes + (nodes transitioning from deallocated state to running))+ unregistered + still starting nodes)
+			newNodes = ar.CurrentTarget - (len(readiness.Ready) + (len(readiness.Unready) - len(readiness.Deallocated)) + len(readiness.LongUnregistered))
+		}
+
+		klog.V(3).Infof("newNodes: %d, currentTarget: %d, deallocated: %d, readinessReady: %d, readinessUnready: %d, "+
+			"readiness.LongUnregistered: %d for nodeGroup %s", newNodes, ar.CurrentTarget, readiness.Deallocated, readiness.Ready,
+			readiness.Unready, readiness.LongUnregistered, id)
 		if newNodes <= 0 {
 			// Negative value is unlikely but theoretically possible.
 			continue
@@ -1010,7 +1074,7 @@ func getNotRegisteredNodes(allNodes []*apiv1.Node, cloudProviderNodeInstances ma
 }
 
 func expectedToRegister(instance cloudprovider.Instance) bool {
-	return instance.Status != nil && instance.Status.State != cloudprovider.InstanceDeleting && instance.Status.ErrorInfo == nil
+	return instance.Status == nil || (instance.Status.State != cloudprovider.InstanceDeleting && instance.Status.ErrorInfo == nil)
 }
 
 // Calculates which of the registered nodes in Kubernetes that do not exist in cloud provider.
@@ -1112,7 +1176,12 @@ func (csr *ClusterStateRegistry) handleInstanceCreationErrorsForNodeGroup(
 			}
 			// Decrease the scale up request by the number of deleted nodes
 			csr.registerOrUpdateScaleUpNoLock(nodeGroup, -len(unseenInstanceIds), currentTime)
-			csr.registerFailedScaleUpNoLock(nodeGroup, metrics.FailedScaleUpReason(errorCode.code), errorCode.class, errorCode.code, gpuResource, gpuType, currentTime)
+
+			csr.registerFailedScaleUpNoLock(nodeGroup, metrics.FailedScaleUpReason(errorCode.code), cloudprovider.InstanceErrorInfo{
+				ErrorClass:   errorCode.class,
+				ErrorCode:    errorCode.code,
+				ErrorMessage: csr.buildErrorMessageEventString(currentUniqueErrorMessagesForErrorCode[errorCode]),
+			}, gpuResource, gpuType, currentTime)
 		}
 	}
 }

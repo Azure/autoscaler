@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"strings"
@@ -114,14 +114,14 @@ func DoHackRegionalRetryForGET(c *Client) autorest.SendDecorator {
 				return response, rerr
 			}
 
-			bodyBytes, _ := ioutil.ReadAll(response.Body)
+			bodyBytes, _ := io.ReadAll(response.Body)
 			defer func() {
-				response.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
+				response.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 			}()
 
 			bodyString := string(bodyBytes)
 			trimmed := strings.TrimSpace(bodyString)
-			klog.V(5).Infof("Send.sendRequest got response with ContentLength %d, StatusCode %d and responseBody length %d", response.ContentLength, response.StatusCode, len(trimmed))
+			klog.V(5).Infof("%s %s got response with ContentLength %d, StatusCode %d and responseBody length %d", request.Method, request.URL.Path, response.ContentLength, response.StatusCode, len(trimmed))
 
 			// Hack: retry the regional ARM endpoint in case of ARM traffic split and arm resource group replication is too slow
 			// Empty content and 2xx http status code are returned in this case.
@@ -177,9 +177,9 @@ func DoHackRegionalRetryForGET(c *Client) autorest.SendDecorator {
 			}
 
 			// Do the same check on regional response just like the global one
-			bodyBytes, _ = ioutil.ReadAll(regionalResponse.Body)
+			bodyBytes, _ = io.ReadAll(regionalResponse.Body)
 			defer func() {
-				regionalResponse.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
+				regionalResponse.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 			}()
 			bodyString = string(bodyBytes)
 			trimmed = strings.TrimSpace(bodyString)

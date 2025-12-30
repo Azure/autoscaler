@@ -99,3 +99,7 @@ func (p *NoOpScaleUpStatusProcessor) Process(context *context.AutoscalingContext
 // CleanUp cleans up the processor's internal structures.
 func (p *NoOpScaleUpStatusProcessor) CleanUp() {
 }
+
+func (result ScaleUpResult) String() string {
+	return [...]string{"ScaleUpSuccessful", "ScaleUpError", "ScaleUpNoOptionsAvailable", "ScaleUpNotNeeded", "ScaleUpNotTried", "ScaleUpInCooldown"}[result]
+}
