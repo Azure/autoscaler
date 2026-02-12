@@ -26,17 +26,14 @@ import (
 	admissionregistration "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	typedadmregv1 "k8s.io/client-go/kubernetes/typed/admissionregistration/v1"
 	"k8s.io/klog/v2"
 )
 
 const (
 	webhookConfigName = "vpa-webhook-config"
-	webhookName       = "vpa.k8s.io"
 )
 
-// MutatingWebhookConfigurationInterface
-func configTLS(cfg certsConfig, minTlsVersion, ciphers string, stop <-chan struct{}, mutatingWebhookClient typedadmregv1.MutatingWebhookConfigurationInterface) *tls.Config {
+func configTLS(cfg certsConfig, minTlsVersion, ciphers string, stop <-chan struct{}) *tls.Config {
 	var tlsVersion uint16
 	var ciphersuites []uint16
 	reverseCipherMap := make(map[string]uint16)
@@ -44,7 +41,7 @@ func configTLS(cfg certsConfig, minTlsVersion, ciphers string, stop <-chan struc
 	for _, c := range tls.CipherSuites() {
 		reverseCipherMap[c.Name] = c.ID
 	}
-	for c := range strings.SplitSeq(strings.ReplaceAll(ciphers, ",", ":"), ":") {
+	for _, c := range strings.Split(strings.ReplaceAll(ciphers, ",", ":"), ":") {
 		cipher, ok := reverseCipherMap[c]
 		if ok {
 			ciphersuites = append(ciphersuites, cipher)
@@ -55,12 +52,14 @@ func configTLS(cfg certsConfig, minTlsVersion, ciphers string, stop <-chan struc
 	}
 
 	switch minTlsVersion {
-	case "", "tls1_2":
+	case "":
+		fallthrough
+	case "tls1_2":
 		tlsVersion = tls.VersionTLS12
 	case "tls1_3":
 		tlsVersion = tls.VersionTLS13
 	default:
-		klog.Fatal(fmt.Errorf("unable to determine value for --min-tls-version (%s), must be either tls1_2 or tls1_3", minTlsVersion))
+		klog.Fatal(fmt.Errorf("Unable to determine value for --min-tls-version (%s), must be either tls1_2 or tls1_3", minTlsVersion))
 	}
 
 	config := &tls.Config{
@@ -69,10 +68,8 @@ func configTLS(cfg certsConfig, minTlsVersion, ciphers string, stop <-chan struc
 	}
 	if *cfg.reload {
 		cr := certReloader{
-			tlsCertPath:           *cfg.tlsCertFile,
-			tlsKeyPath:            *cfg.tlsPrivateKey,
-			clientCaPath:          *cfg.clientCaFile,
-			mutatingWebhookClient: mutatingWebhookClient,
+			tlsCertPath: *cfg.tlsCertFile,
+			tlsKeyPath:  *cfg.tlsPrivateKey,
 		}
 		if err := cr.load(); err != nil {
 			klog.Fatal(err)
@@ -102,14 +99,14 @@ func selfRegistration(clientset kubernetes.Interface, caCert []byte, webHookDela
 			klog.Fatal(err2)
 		}
 	}
-	registerClientConfig := admissionregistration.WebhookClientConfig{}
+	RegisterClientConfig := admissionregistration.WebhookClientConfig{}
 	if !registerByURL {
-		registerClientConfig.Service = &admissionregistration.ServiceReference{
+		RegisterClientConfig.Service = &admissionregistration.ServiceReference{
 			Namespace: namespace,
 			Name:      serviceName,
 		}
 	} else {
-		registerClientConfig.URL = &url
+		RegisterClientConfig.URL = &url
 	}
 	sideEffects := admissionregistration.SideEffectClassNone
 
@@ -120,7 +117,7 @@ func selfRegistration(clientset kubernetes.Interface, caCert []byte, webHookDela
 		failurePolicy = admissionregistration.Ignore
 	}
 
-	registerClientConfig.CABundle = caCert
+	RegisterClientConfig.CABundle = caCert
 
 	var namespaceSelector metav1.LabelSelector
 	if len(ignoredNamespaces) > 0 {
@@ -156,7 +153,7 @@ func selfRegistration(clientset kubernetes.Interface, caCert []byte, webHookDela
 		},
 		Webhooks: []admissionregistration.MutatingWebhook{
 			{
-				Name:                    webhookName,
+				Name:                    "vpa.k8s.io",
 				AdmissionReviewVersions: []string{"v1"},
 				Rules: []admissionregistration.RuleWithOperations{
 					{
@@ -177,7 +174,7 @@ func selfRegistration(clientset kubernetes.Interface, caCert []byte, webHookDela
 					},
 				},
 				FailurePolicy:     &failurePolicy,
-				ClientConfig:      registerClientConfig,
+				ClientConfig:      RegisterClientConfig,
 				SideEffects:       &sideEffects,
 				TimeoutSeconds:    &timeoutSeconds,
 				NamespaceSelector: &namespaceSelector,
@@ -200,8 +197,8 @@ func convertLabelsToMap(labels string) (map[string]string, error) {
 		return m, nil
 	}
 	labels = strings.Trim(labels, "\"")
-	s := strings.SplitSeq(labels, ",")
-	for tag := range s {
+	s := strings.Split(labels, ",")
+	for _, tag := range s {
 		kv := strings.SplitN(tag, ":", 2)
 		if len(kv) != 2 {
 			return map[string]string{}, fmt.Errorf("labels '%s' are invalid, the format should be: 'key1:value1,key2:value2'", labels)

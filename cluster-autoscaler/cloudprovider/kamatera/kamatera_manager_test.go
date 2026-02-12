@@ -49,7 +49,6 @@ func TestManager_refresh(t *testing.T) {
 kamatera-api-client-id=1a222bbb3ccc44d5555e6ff77g88hh9i
 kamatera-api-secret=9ii88h7g6f55555ee4444444dd33eee2
 cluster-name=aaabbb
-filter-name-prefix=myprefix
 default-datacenter=IL
 default-image=ubuntu
 default-cpu=1a
@@ -73,12 +72,12 @@ max-size=5
 	m.client = &client
 	ctx := context.Background()
 
-	serverName1 := "myprefix" + mockKamateraServerName()
-	serverName2 := "myprefix" + mockKamateraServerName()
-	serverName3 := "myprefix" + mockKamateraServerName()
-	serverName4 := "myprefix" + mockKamateraServerName()
+	serverName1 := mockKamateraServerName()
+	serverName2 := mockKamateraServerName()
+	serverName3 := mockKamateraServerName()
+	serverName4 := mockKamateraServerName()
 	client.On(
-		"ListServers", ctx, m.instances, "myprefix",
+		"ListServers", ctx, m.instances,
 	).Return(
 		[]Server{
 			{Name: serverName1, Tags: []string{fmt.Sprintf("%s%s", clusterServerTagPrefix, "aaabbb"), fmt.Sprintf("%s%s", nodeGroupTagPrefix, "ng1")}},
@@ -96,7 +95,7 @@ max-size=5
 
 	// test api error
 	client.On(
-		"ListServers", ctx, m.instances, "myprefix",
+		"ListServers", ctx, m.instances,
 	).Return(
 		[]Server{},
 		fmt.Errorf("error on API call"),
@@ -144,7 +143,7 @@ cluster-name=aaabbb
 	ctx := context.Background()
 	serverName1 := mockKamateraServerName()
 	client.On(
-		"ListServers", ctx, m.instances, "",
+		"ListServers", ctx, m.instances,
 	).Return(
 		[]Server{
 			{Name: serverName1, Tags: []string{fmt.Sprintf("%s%s", clusterServerTagPrefix, "aaabbb"), fmt.Sprintf("%s%s", nodeGroupTagPrefix, "ng1")}},

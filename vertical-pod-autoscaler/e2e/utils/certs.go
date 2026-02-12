@@ -20,6 +20,7 @@ package utils
 
 import (
 	"crypto/x509"
+	"io/ioutil"
 	"os"
 
 	"k8s.io/client-go/util/cert"
@@ -37,7 +38,7 @@ type certContext struct {
 // SetupWebhookCert sets up the server cert. For example, user, apiservers and admission webhooks
 // can use the cert to prove their identity to the kube-apiserver.
 func SetupWebhookCert(namespaceName string) *certContext {
-	certDir, err := os.MkdirTemp("", "test-e2e-server-cert")
+	certDir, err := ioutil.TempDir("", "test-e2e-server-cert")
 	if err != nil {
 		framework.Failf("Failed to create a temp dir for cert generation %v", err)
 	}
@@ -50,11 +51,11 @@ func SetupWebhookCert(namespaceName string) *certContext {
 	if err != nil {
 		framework.Failf("Failed to create CA cert for apiserver %v", err)
 	}
-	caCertFile, err := os.CreateTemp(certDir, "ca.crt")
+	caCertFile, err := ioutil.TempFile(certDir, "ca.crt")
 	if err != nil {
 		framework.Failf("Failed to create a temp file for ca cert generation %v", err)
 	}
-	if err := os.WriteFile(caCertFile.Name(), utils.EncodeCertPEM(signingCert), 0644); err != nil {
+	if err := ioutil.WriteFile(caCertFile.Name(), utils.EncodeCertPEM(signingCert), 0644); err != nil {
 		framework.Failf("Failed to write CA cert %v", err)
 	}
 	key, err := utils.NewPrivateKey()
@@ -72,22 +73,22 @@ func SetupWebhookCert(namespaceName string) *certContext {
 	if err != nil {
 		framework.Failf("Failed to create cert%v", err)
 	}
-	certFile, err := os.CreateTemp(certDir, "server.crt")
+	certFile, err := ioutil.TempFile(certDir, "server.crt")
 	if err != nil {
 		framework.Failf("Failed to create a temp file for cert generation %v", err)
 	}
-	keyFile, err := os.CreateTemp(certDir, "server.key")
+	keyFile, err := ioutil.TempFile(certDir, "server.key")
 	if err != nil {
 		framework.Failf("Failed to create a temp file for key generation %v", err)
 	}
-	if err = os.WriteFile(certFile.Name(), utils.EncodeCertPEM(signedCert), 0600); err != nil {
+	if err = ioutil.WriteFile(certFile.Name(), utils.EncodeCertPEM(signedCert), 0600); err != nil {
 		framework.Failf("Failed to write cert file %v", err)
 	}
 	privateKeyPEM, err := keyutil.MarshalPrivateKeyToPEM(key)
 	if err != nil {
 		framework.Failf("Failed to marshal key %v", err)
 	}
-	if err = os.WriteFile(keyFile.Name(), privateKeyPEM, 0644); err != nil {
+	if err = ioutil.WriteFile(keyFile.Name(), privateKeyPEM, 0644); err != nil {
 		framework.Failf("Failed to write key file %v", err)
 	}
 	return &certContext{

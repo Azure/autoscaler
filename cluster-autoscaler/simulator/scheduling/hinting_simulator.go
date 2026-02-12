@@ -91,8 +91,7 @@ func (s *HintingSimulator) tryScheduleUsingHints(clusterSnapshot clustersnapshot
 
 	nodeInfo, err := clusterSnapshot.GetNodeInfo(hintedNode)
 	if err != nil {
-		// The hinted Node is no longer in the cluster. No need to error out, we can just look for another one.
-		return "", nil
+		return "", err
 	}
 	if !isNodeAcceptable(nodeInfo) {
 		return "", nil

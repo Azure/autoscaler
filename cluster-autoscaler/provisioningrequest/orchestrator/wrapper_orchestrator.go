@@ -19,15 +19,14 @@ package orchestrator
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	apiv1 "k8s.io/api/core/v1"
-	v1 "k8s.io/autoscaler/cluster-autoscaler/apis/provisioningrequest/autoscaling.x-k8s.io/v1"
+	"k8s.io/autoscaler/cluster-autoscaler/apis/provisioningrequest/autoscaling.x-k8s.io/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaleup"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaleup/orchestrator"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
 	ca_processors "k8s.io/autoscaler/cluster-autoscaler/processors"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
-	"k8s.io/autoscaler/cluster-autoscaler/resourcequotas"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/taints"
@@ -37,7 +36,7 @@ import (
 // Each loop WrapperOrchestrator split out regular and pods from ProvisioningRequest, pick one group that
 // wasn't picked in the last loop and run ScaleUp for it.
 type WrapperOrchestrator struct {
-	autoscalingCtx      *ca_context.AutoscalingContext
+	autoscalingContext  *context.AutoscalingContext
 	podsOrchestrator    scaleup.Orchestrator
 	provReqOrchestrator scaleup.Orchestrator
 }
@@ -51,10 +50,16 @@ func NewWrapperOrchestrator(provReqOrchestrator scaleup.Orchestrator) *WrapperOr
 }
 
 // Initialize initializes the orchestrator object with required fields.
-func (o *WrapperOrchestrator) Initialize(autoscalingCtx *ca_context.AutoscalingContext, processors *ca_processors.AutoscalingProcessors, clusterStateRegistry *clusterstate.ClusterStateRegistry, estimatorBuilder estimator.EstimatorBuilder, taintConfig taints.TaintConfig, quotasTrackerFactory *resourcequotas.TrackerFactory) {
-	o.autoscalingCtx = autoscalingCtx
-	o.podsOrchestrator.Initialize(autoscalingCtx, processors, clusterStateRegistry, estimatorBuilder, taintConfig, quotasTrackerFactory)
-	o.provReqOrchestrator.Initialize(autoscalingCtx, processors, clusterStateRegistry, estimatorBuilder, taintConfig, quotasTrackerFactory)
+func (o *WrapperOrchestrator) Initialize(
+	autoscalingContext *context.AutoscalingContext,
+	processors *ca_processors.AutoscalingProcessors,
+	clusterStateRegistry *clusterstate.ClusterStateRegistry,
+	estimatorBuilder estimator.EstimatorBuilder,
+	taintConfig taints.TaintConfig,
+) {
+	o.autoscalingContext = autoscalingContext
+	o.podsOrchestrator.Initialize(autoscalingContext, processors, clusterStateRegistry, estimatorBuilder, taintConfig)
+	o.provReqOrchestrator.Initialize(autoscalingContext, processors, clusterStateRegistry, estimatorBuilder, taintConfig)
 }
 
 // ScaleUp run scaleUp function for regular pods of pods from ProvisioningRequest.
@@ -66,17 +71,17 @@ func (o *WrapperOrchestrator) ScaleUp(
 	allOrNothing bool,
 ) (*status.ScaleUpStatus, errors.AutoscalerError) {
 	defer func() {
-		o.autoscalingCtx.ProvisioningRequestScaleUpMode = !o.autoscalingCtx.ProvisioningRequestScaleUpMode
+		o.autoscalingContext.ProvisioningRequestScaleUpMode = !o.autoscalingContext.ProvisioningRequestScaleUpMode
 	}()
 
 	provReqPods, regularPods := splitOut(unschedulablePods)
 	if len(provReqPods) == 0 {
-		o.autoscalingCtx.ProvisioningRequestScaleUpMode = false
+		o.autoscalingContext.ProvisioningRequestScaleUpMode = false
 	} else if len(regularPods) == 0 {
-		o.autoscalingCtx.ProvisioningRequestScaleUpMode = true
+		o.autoscalingContext.ProvisioningRequestScaleUpMode = true
 	}
 
-	if o.autoscalingCtx.ProvisioningRequestScaleUpMode {
+	if o.autoscalingContext.ProvisioningRequestScaleUpMode {
 		return o.provReqOrchestrator.ScaleUp(provReqPods, nodes, daemonSets, nodeInfos, allOrNothing)
 	}
 	return o.podsOrchestrator.ScaleUp(regularPods, nodes, daemonSets, nodeInfos, allOrNothing)

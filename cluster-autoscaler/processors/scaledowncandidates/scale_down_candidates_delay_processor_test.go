@@ -26,7 +26,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 )
 
 func TestGetScaleDownCandidates(t *testing.T) {
@@ -48,7 +48,7 @@ func TestGetScaleDownCandidates(t *testing.T) {
 		},
 	}
 
-	autoscalingCtx := ca_context.AutoscalingContext{
+	ctx := context.AutoscalingContext{
 		AutoscalingOptions: config.AutoscalingOptions{
 			ScaleDownDelayAfterAdd:     time.Minute * 10,
 			ScaleDownDelayAfterDelete:  time.Minute * 10,
@@ -58,23 +58,23 @@ func TestGetScaleDownCandidates(t *testing.T) {
 	}
 
 	testCases := map[string]struct {
-		autoscalingCtx ca_context.AutoscalingContext
-		candidates     []*v1.Node
-		expected       []*v1.Node
-		setupProcessor func(p *ScaleDownCandidatesDelayProcessor) *ScaleDownCandidatesDelayProcessor
+		autoscalingContext context.AutoscalingContext
+		candidates         []*v1.Node
+		expected           []*v1.Node
+		setupProcessor     func(p *ScaleDownCandidatesDelayProcessor) *ScaleDownCandidatesDelayProcessor
 	}{
 		// Expectation: no nodegroups should be filtered out
 		"no scale ups - no scale downs - no scale down failures": {
-			autoscalingCtx: autoscalingCtx,
-			candidates:     []*v1.Node{n1, n2, n3},
-			expected:       []*v1.Node{n1, n2, n3},
-			setupProcessor: nil,
+			autoscalingContext: ctx,
+			candidates:         []*v1.Node{n1, n2, n3},
+			expected:           []*v1.Node{n1, n2, n3},
+			setupProcessor:     nil,
 		},
 		// Expectation: only nodegroups in cool-down should be filtered out
 		"no scale ups - 2 scale downs - no scale down failures": {
-			autoscalingCtx: autoscalingCtx,
-			candidates:     []*v1.Node{n1, n2, n3},
-			expected:       []*v1.Node{n1, n3},
+			autoscalingContext: ctx,
+			candidates:         []*v1.Node{n1, n2, n3},
+			expected:           []*v1.Node{n1, n3},
 			setupProcessor: func(p *ScaleDownCandidatesDelayProcessor) *ScaleDownCandidatesDelayProcessor {
 				// fake nodegroups for calling `RegisterScaleDown`
 				ng2 := test.NewTestNodeGroup("ng-2", 0, 0, 0, false, false, "", nil, nil)
@@ -89,9 +89,9 @@ func TestGetScaleDownCandidates(t *testing.T) {
 		},
 		// Expectation: only nodegroups in cool-down should be filtered out
 		"1 scale up - no scale down - no scale down failures": {
-			autoscalingCtx: autoscalingCtx,
-			candidates:     []*v1.Node{n1, n2, n3},
-			expected:       []*v1.Node{n1, n3},
+			autoscalingContext: ctx,
+			candidates:         []*v1.Node{n1, n2, n3},
+			expected:           []*v1.Node{n1, n3},
 			setupProcessor: func(p *ScaleDownCandidatesDelayProcessor) *ScaleDownCandidatesDelayProcessor {
 				// fake nodegroups for calling `RegisterScaleUp`
 				ng2 := test.NewTestNodeGroup("ng-2", 0, 0, 0, false, false, "", nil, nil)
@@ -106,9 +106,9 @@ func TestGetScaleDownCandidates(t *testing.T) {
 		},
 		// Expectation: only nodegroups in cool-down should be filtered out
 		"no scale up - no scale down - 1 scale down failure": {
-			autoscalingCtx: autoscalingCtx,
-			candidates:     []*v1.Node{n1, n2, n3},
-			expected:       []*v1.Node{n1, n3},
+			autoscalingContext: ctx,
+			candidates:         []*v1.Node{n1, n2, n3},
+			expected:           []*v1.Node{n1, n3},
 			setupProcessor: func(p *ScaleDownCandidatesDelayProcessor) *ScaleDownCandidatesDelayProcessor {
 				// fake nodegroups for calling `RegisterScaleUp`
 				ng2 := test.NewTestNodeGroup("ng-2", 0, 0, 0, false, false, "", nil, nil)
@@ -125,7 +125,7 @@ func TestGetScaleDownCandidates(t *testing.T) {
 
 	for description, testCase := range testCases {
 		t.Run(description, func(t *testing.T) {
-			provider := testprovider.NewTestCloudProviderBuilder().Build()
+			provider := testprovider.NewTestCloudProvider(nil, nil)
 
 			p := NewScaleDownCandidatesDelayProcessor()
 
@@ -140,9 +140,9 @@ func TestGetScaleDownCandidates(t *testing.T) {
 			provider.AddNodeGroup("ng-3", 1, 3, 2)
 			provider.AddNode("ng-3", n3)
 
-			testCase.autoscalingCtx.CloudProvider = provider
+			testCase.autoscalingContext.CloudProvider = provider
 
-			no, err := p.GetScaleDownCandidates(&testCase.autoscalingCtx, testCase.candidates)
+			no, err := p.GetScaleDownCandidates(&testCase.autoscalingContext, testCase.candidates)
 
 			assert.NoError(t, err)
 			assert.Equal(t, testCase.expected, no)

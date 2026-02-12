@@ -43,10 +43,10 @@ func TestGetPodSpecsReturnsSpecs(t *testing.T) {
 	// when
 	podSpecs, err := client.GetPodSpecs()
 
-	// then
+	//then
 	assert.NoError(t, err)
 	assert.Equal(t, len(tc.podSpecs), len(podSpecs), "SpecClient returned different number of results then expected")
 	for _, podSpec := range podSpecs {
-		assert.Contains(t, tc.podSpecs, podSpec, "One of returned BasicPodSpec is different than expected")
+		assert.Contains(t, tc.podSpecs, podSpec, "One of returned BasicPodSpcec is different than expected")
 	}
 }

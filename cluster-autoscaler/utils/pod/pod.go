@@ -17,15 +17,10 @@ limitations under the License.
 package pod
 
 import (
-	"github.com/google/uuid"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/types"
 
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	resourcehelper "k8s.io/component-helpers/resource"
 )
 
 const (
@@ -83,59 +78,4 @@ func ClearPodNodeNames(pods []*apiv1.Pod) []*apiv1.Pod {
 		newPods = append(newPods, &newPod)
 	}
 	return newPods
-}
-
-// PodRequests calculates Pod requests using a common resource helper shared with the scheduler
-func PodRequests(pod *apiv1.Pod) apiv1.ResourceList {
-	inPlacePodVerticalScalingEnabled := utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling)
-	podLevelResourcesEnabled := utilfeature.DefaultFeatureGate.Enabled(features.PodLevelResources)
-
-	return resourcehelper.PodRequests(pod, resourcehelper.PodResourcesOptions{
-		UseStatusResources:    inPlacePodVerticalScalingEnabled,
-		SkipPodLevelResources: !podLevelResourcesEnabled,
-	})
-}
-
-// GetPodFromTemplate generates a Pod from a PodTemplateSpec.
-//
-// Source: https://github.com/kubernetes/kubernetes/blob/f366ba158ab7f0370e4e988dca8b0330a5952f43/pkg/controller/controller_utils.go#L562
-func GetPodFromTemplate(template *apiv1.PodTemplateSpec, namespace string) *apiv1.Pod {
-	desiredLabels := getPodsLabelSet(template)
-	desiredFinalizers := getPodsFinalizers(template)
-	desiredAnnotations := getPodsAnnotationSet(template)
-
-	pod := &apiv1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels:       desiredLabels,
-			Namespace:    namespace,
-			Annotations:  desiredAnnotations,
-			GenerateName: uuid.NewString(),
-			Finalizers:   desiredFinalizers,
-		},
-	}
-
-	pod.Spec = template.Spec
-	return pod
-}
-
-func getPodsLabelSet(template *apiv1.PodTemplateSpec) labels.Set {
-	desiredLabels := make(labels.Set)
-	for k, v := range template.Labels {
-		desiredLabels[k] = v
-	}
-	return desiredLabels
-}
-
-func getPodsFinalizers(template *apiv1.PodTemplateSpec) []string {
-	desiredFinalizers := make([]string, len(template.Finalizers))
-	copy(desiredFinalizers, template.Finalizers)
-	return desiredFinalizers
-}
-
-func getPodsAnnotationSet(template *apiv1.PodTemplateSpec) labels.Set {
-	desiredAnnotations := make(labels.Set)
-	for k, v := range template.Annotations {
-		desiredAnnotations[k] = v
-	}
-	return desiredAnnotations
 }

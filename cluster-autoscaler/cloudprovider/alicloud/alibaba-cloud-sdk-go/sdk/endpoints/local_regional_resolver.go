@@ -18,7 +18,7 @@ package endpoints
 
 import (
 	"fmt"
-	"github.com/jmespath-community/go-jmespath"
+	"github.com/jmespath/go-jmespath"
 	"strings"
 )
 

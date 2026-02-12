@@ -37,16 +37,12 @@ package model
 
 import (
 	"fmt"
-	"sync"
+	"math"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog/v2"
-
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
-	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/features"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/util"
 )
 
@@ -85,10 +81,6 @@ type ContainerStateAggregator interface {
 	// GetUpdateMode returns the update mode of VPA controlling this aggregator,
 	// nil if aggregator is not autoscaled.
 	GetUpdateMode() *vpa_types.UpdateMode
-	// GetOOMBumpUpRatio returns the OOM bump up ratio for this container
-	GetOOMBumpUpRatio() float64
-	// GetOOMMinBumpUp returns the minimum OOM bump up value for this container
-	GetOOMMinBumpUp() float64
 }
 
 // AggregateContainerState holds input signals aggregated from a set of containers.
@@ -113,29 +105,16 @@ type AggregateContainerState struct {
 	// we want to know if it needs recommendation, if the recommendation
 	// is present and if the automatic updates are on (are we able to
 	// apply the recommendation to the pods).
-	lastRecommendation  corev1.ResourceList
+	LastRecommendation  corev1.ResourceList
 	IsUnderVPA          bool
 	UpdateMode          *vpa_types.UpdateMode
 	ScalingMode         *vpa_types.ContainerScalingMode
-	OOMBumpUpRatio      float64
-	OOMMinBumpUp        float64
 	ControlledResources *[]ResourceName
-
-	mutex sync.RWMutex
 }
 
-// GetLastRecommendation returns last recorded recommendation in a thread-safe manner.
+// GetLastRecommendation returns last recorded recommendation.
 func (a *AggregateContainerState) GetLastRecommendation() corev1.ResourceList {
-	a.mutex.RLock()
-	defer a.mutex.RUnlock()
-	return a.lastRecommendation
-}
-
-// SetLastRecommendation sets the last recorded recommendation in a thread-safe manner.
-func (a *AggregateContainerState) SetLastRecommendation(recommendation corev1.ResourceList) {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
-	a.lastRecommendation = recommendation
+	return a.LastRecommendation
 }
 
 // NeedsRecommendation returns true if the state should have recommendation calculated.
@@ -164,21 +143,11 @@ func (a *AggregateContainerState) GetControlledResources() []ResourceName {
 	return DefaultControlledResources
 }
 
-// GetOOMBumpUpRatio returns the ratio by which to increase the memory recommendation in case of OOM
-func (a *AggregateContainerState) GetOOMBumpUpRatio() float64 {
-	return a.OOMBumpUpRatio
-}
-
-// GetOOMMinBumpUp returns the minimum absolute increase in memory recommendation in case of OOM
-func (a *AggregateContainerState) GetOOMMinBumpUp() float64 {
-	return a.OOMMinBumpUp
-}
-
 // MarkNotAutoscaled registers that this container state is not controlled by
 // a VPA object.
 func (a *AggregateContainerState) MarkNotAutoscaled() {
 	a.IsUnderVPA = false
-	a.SetLastRecommendation(nil)
+	a.LastRecommendation = nil
 	a.UpdateMode = nil
 	a.ScalingMode = nil
 	a.ControlledResources = nil
@@ -206,8 +175,6 @@ func NewAggregateContainerState() *AggregateContainerState {
 		AggregateCPUUsage:    util.NewDecayingHistogram(config.CPUHistogramOptions, config.CPUHistogramDecayHalfLife),
 		AggregateMemoryPeaks: util.NewDecayingHistogram(config.MemoryHistogramOptions, config.MemoryHistogramDecayHalfLife),
 		CreationTime:         time.Now(),
-		OOMBumpUpRatio:       config.OOMBumpUpRatio,
-		OOMMinBumpUp:         config.OOMMinBumpUp,
 	}
 }
 
@@ -239,8 +206,12 @@ func (a *AggregateContainerState) SubtractSample(sample *ContainerUsageSample) {
 
 func (a *AggregateContainerState) addCPUSample(sample *ContainerUsageSample) {
 	cpuUsageCores := CoresFromCPUAmount(sample.Usage)
+	cpuRequestCores := CoresFromCPUAmount(sample.Request)
+	// Samples are added with the weight equal to the current request. This means that
+	// whenever the request is increased, the history accumulated so far effectively decays,
+	// which helps react quickly to CPU starvation.
 	a.AggregateCPUUsage.AddSample(
-		cpuUsageCores, minSampleWeight, sample.MeasureStart)
+		cpuUsageCores, math.Max(cpuRequestCores, minSampleWeight), sample.MeasureStart)
 	if sample.MeasureStart.After(a.LastSampleStart) {
 		a.LastSampleStart = sample.MeasureStart
 	}
@@ -303,13 +274,6 @@ func (a *AggregateContainerState) isEmpty() bool {
 	return a.TotalSamplesCount == 0
 }
 
-func (a *AggregateContainerState) convertQuantityToFloat64(quantity *resource.Quantity) float64 {
-	if quantity == nil {
-		return 0.0
-	}
-	return float64(quantity.MilliValue()) / 1000.0
-}
-
 // UpdateFromPolicy updates container state scaling mode and controlled resources based on resource
 // policy of the VPA object.
 func (a *AggregateContainerState) UpdateFromPolicy(resourcePolicy *vpa_types.ContainerResourcePolicy) {
@@ -322,25 +286,6 @@ func (a *AggregateContainerState) UpdateFromPolicy(resourcePolicy *vpa_types.Con
 	a.ControlledResources = &DefaultControlledResources
 	if resourcePolicy != nil && resourcePolicy.ControlledResources != nil {
 		a.ControlledResources = ResourceNamesApiToModel(*resourcePolicy.ControlledResources)
-	}
-
-	// Per VPA components - feature flag "PerVPAConfig" must be enabled
-	if resourcePolicy != nil {
-		if resourcePolicy.OOMBumpUpRatio != nil {
-			if features.Enabled(features.PerVPAConfig) {
-				a.OOMBumpUpRatio = a.convertQuantityToFloat64(resourcePolicy.OOMBumpUpRatio)
-			} else {
-				klog.InfoS("oomBumpUpRatio is set but PerVPAConfig feature gate is disabled, falling back to default value")
-			}
-		}
-
-		if resourcePolicy.OOMMinBumpUp != nil {
-			if features.Enabled(features.PerVPAConfig) {
-				a.OOMMinBumpUp = a.convertQuantityToFloat64(resourcePolicy.OOMMinBumpUp)
-			} else {
-				klog.InfoS("oomMinBumpUp is set but PerVPAConfig feature gate is disabled, falling back to default value")
-			}
-		}
 	}
 }
 
@@ -366,12 +311,12 @@ func AggregateStateByContainerName(aggregateContainerStateMap aggregateContainer
 // present in the cluster state.
 type ContainerStateAggregatorProxy struct {
 	containerID ContainerID
-	cluster     *clusterState
+	cluster     *ClusterState
 }
 
 // NewContainerStateAggregatorProxy creates a ContainerStateAggregatorProxy
 // pointing to the cluster state.
-func NewContainerStateAggregatorProxy(cluster *clusterState, containerID ContainerID) ContainerStateAggregator {
+func NewContainerStateAggregatorProxy(cluster *ClusterState, containerID ContainerID) ContainerStateAggregator {
 	return &ContainerStateAggregatorProxy{containerID, cluster}
 }
 
@@ -409,18 +354,4 @@ func (p *ContainerStateAggregatorProxy) GetUpdateMode() *vpa_types.UpdateMode {
 func (p *ContainerStateAggregatorProxy) GetScalingMode() *vpa_types.ContainerScalingMode {
 	aggregator := p.cluster.findOrCreateAggregateContainerState(p.containerID)
 	return aggregator.GetScalingMode()
-}
-
-// GetOOMMinBumpUp returns the minimum amount to bump up resources when OOM is detected.
-// This implementation returns 0 to satisfy the interface requirement.
-func (p *ContainerStateAggregatorProxy) GetOOMMinBumpUp() float64 {
-	aggregator := p.cluster.findOrCreateAggregateContainerState(p.containerID)
-	return aggregator.GetOOMMinBumpUp()
-}
-
-// GetOOMBumpUpRatio returns the ratio to increase resources when OOM is detected.
-// This implementation returns 0 to satisfy the interface requirement.
-func (p *ContainerStateAggregatorProxy) GetOOMBumpUpRatio() float64 {
-	aggregator := p.cluster.findOrCreateAggregateContainerState(p.containerID)
-	return aggregator.GetOOMBumpUpRatio()
 }

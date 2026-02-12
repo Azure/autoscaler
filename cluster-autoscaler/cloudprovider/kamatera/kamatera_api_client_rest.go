@@ -32,12 +32,10 @@ const (
 // NewKamateraApiClientRest factory to create new Rest API Client struct
 func NewKamateraApiClientRest(clientId string, secret string, url string) (client KamateraApiClientRest) {
 	return KamateraApiClientRest{
-		userAgent:                userAgent,
-		clientId:                 clientId,
-		secret:                   secret,
-		url:                      url,
-		maxRetries:               5,
-		expSecondsBetweenRetries: 1,
+		userAgent: userAgent,
+		clientId:  clientId,
+		secret:    secret,
+		url:       url,
 	}
 }
 
@@ -77,24 +75,20 @@ type KamateraServerCreatePostRequest struct {
 
 // KamateraApiClientRest is the struct to perform API calls
 type KamateraApiClientRest struct {
-	userAgent                string
-	clientId                 string
-	secret                   string
-	url                      string
-	maxRetries               int
-	expSecondsBetweenRetries int
+	userAgent string
+	clientId  string
+	secret    string
+	url       string
 }
 
 // ListServers returns a list of all servers in the relevant account and fetches their tags
-func (c *KamateraApiClientRest) ListServers(ctx context.Context, instances map[string]*Instance, namePrefix string) ([]Server, error) {
+func (c *KamateraApiClientRest) ListServers(ctx context.Context, instances map[string]*Instance) ([]Server, error) {
 	res, err := request(
 		ctx,
 		ProviderConfig{ApiUrl: c.url, ApiClientID: c.clientId, ApiSecret: c.secret},
 		"GET",
 		"/service/servers",
 		nil,
-		c.maxRetries,
-		c.expSecondsBetweenRetries,
 	)
 	if err != nil {
 		return nil, err
@@ -103,18 +97,16 @@ func (c *KamateraApiClientRest) ListServers(ctx context.Context, instances map[s
 	for _, server := range res.([]interface{}) {
 		server := server.(map[string]interface{})
 		serverName := server["name"].(string)
-		if len(namePrefix) == 0 || strings.HasPrefix(serverName, namePrefix) {
-			serverPowerOn := server["power"].(string) == "on"
-			serverTags, err := c.getServerTags(ctx, serverName, instances)
-			if err != nil {
-				return nil, err
-			}
-			servers = append(servers, Server{
-				Name:    serverName,
-				Tags:    serverTags,
-				PowerOn: serverPowerOn,
-			})
+		serverPowerOn := server["power"].(string) == "on"
+		serverTags, err := c.getServerTags(ctx, serverName, instances)
+		if err != nil {
+			return nil, err
 		}
+		servers = append(servers, Server{
+			Name:    serverName,
+			Tags:    serverTags,
+			PowerOn: serverPowerOn,
+		})
 	}
 	return servers, nil
 }
@@ -127,8 +119,6 @@ func (c *KamateraApiClientRest) DeleteServer(ctx context.Context, name string) e
 		"POST",
 		"/service/server/poweroff",
 		KamateraServerPostRequest{ServerName: name},
-		c.maxRetries,
-		c.expSecondsBetweenRetries,
 	)
 	if err == nil {
 		commandId := res.([]interface{})[0].(string)
@@ -136,11 +126,9 @@ func (c *KamateraApiClientRest) DeleteServer(ctx context.Context, name string) e
 			ctx,
 			ProviderConfig{ApiUrl: c.url, ApiClientID: c.clientId, ApiSecret: c.secret},
 			commandId,
-			c.maxRetries,
-			c.expSecondsBetweenRetries,
 		)
 		if err != nil {
-			klog.V(1).Infof("Failed to validate server power off but will attempt to terminate anyway %s: %v", name, err)
+			return err
 		}
 	} else {
 		klog.V(1).Infof("Failed to power off server but will attempt to terminate anyway %s: %v", name, err)
@@ -151,8 +139,6 @@ func (c *KamateraApiClientRest) DeleteServer(ctx context.Context, name string) e
 		"POST",
 		"/service/server/terminate",
 		KamateraServerTerminatePostRequest{ServerName: name, Force: true},
-		c.maxRetries,
-		c.expSecondsBetweenRetries,
 	)
 	if err != nil {
 		return err
@@ -207,8 +193,6 @@ func (c *KamateraApiClientRest) CreateServers(ctx context.Context, count int, co
 				UserdataFile:       config.UserdataFile,
 				Tag:                Tag,
 			},
-			1,
-			0,
 		)
 		if err != nil {
 			return nil, err
@@ -225,8 +209,6 @@ func (c *KamateraApiClientRest) CreateServers(ctx context.Context, count int, co
 		ctx,
 		ProviderConfig{ApiUrl: c.url, ApiClientID: c.clientId, ApiSecret: c.secret},
 		serverNameCommandIds,
-		c.maxRetries,
-		c.expSecondsBetweenRetries,
 	)
 	if err != nil {
 		return nil, err
@@ -249,16 +231,14 @@ func (c *KamateraApiClientRest) getServerTags(ctx context.Context, serverName st
 			"POST",
 			"/server/tags",
 			KamateraServerPostRequest{ServerName: serverName},
-			c.maxRetries,
-			c.expSecondsBetweenRetries,
 		)
 		if err != nil {
 			return nil, err
 		}
-		tags := make([]string, 0)
+		var tags []string
 		for _, row := range res.([]interface{}) {
 			row := row.(map[string]interface{})
-			tags = append(tags, row["tagName"].(string))
+			tags = append(tags, row["tag name"].(string))
 		}
 		return tags, nil
 	}
@@ -285,5 +265,5 @@ func kamateraServerName(namePrefix string) string {
 	if len(namePrefix) > 0 {
 		namePrefix = fmt.Sprintf("%s-", namePrefix)
 	}
-	return fmt.Sprintf("%s%s", namePrefix, strings.ReplaceAll(uuid.New().String()[:12], "-", ""))
+	return fmt.Sprintf("%s%s", namePrefix, strings.ReplaceAll(uuid.New().String(), "-", ""))
 }

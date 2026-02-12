@@ -20,7 +20,7 @@ import (
 	"testing"
 
 	"k8s.io/autoscaler/cluster-autoscaler/config"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 )
 
@@ -162,27 +162,6 @@ func TestIsAwsNodeInfoSimilar(t *testing.T) {
 			value2:         "bar",
 			removeOneLabel: true,
 		},
-		{
-			description:    "topology.k8s.aws/zone-id empty value",
-			label:          "topology.k8s.aws/zone-id",
-			value1:         "",
-			value2:         "",
-			removeOneLabel: false,
-		},
-		{
-			description:    "topology.k8s.aws/zone-id different values",
-			label:          "topology.k8s.aws/zone-id",
-			value1:         "foo",
-			value2:         "bar",
-			removeOneLabel: false,
-		},
-		{
-			description:    "topology.k8s.aws/zone-id one node labeled",
-			label:          "topology.k8s.aws/zone-id",
-			value1:         "foo",
-			value2:         "bar",
-			removeOneLabel: true,
-		},
 	} {
 		t.Run(tc.description, func(t *testing.T) {
 			node1.ObjectMeta.Labels[tc.label] = tc.value1
@@ -196,8 +175,8 @@ func TestIsAwsNodeInfoSimilar(t *testing.T) {
 }
 
 func TestFindSimilarNodeGroupsAwsBasic(t *testing.T) {
-	autoscalingCtx := &ca_context.AutoscalingContext{}
-	ni1, ni2, ni3 := buildBasicNodeGroups(autoscalingCtx)
+	context := &context.AutoscalingContext{}
+	ni1, ni2, ni3 := buildBasicNodeGroups(context)
 	processor := &BalancingNodeGroupSetProcessor{Comparator: CreateAwsNodeInfoComparator([]string{}, config.NodeGroupDifferenceRatios{})}
-	basicSimilarNodeGroupsTest(t, autoscalingCtx, processor, ni1, ni2, ni3)
+	basicSimilarNodeGroupsTest(t, context, processor, ni1, ni2, ni3)
 }

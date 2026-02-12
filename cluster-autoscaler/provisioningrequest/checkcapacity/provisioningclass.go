@@ -28,14 +28,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/autoscaler/cluster-autoscaler/apis/provisioningrequest/autoscaling.x-k8s.io/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/provreq"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
 	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest/conditions"
 	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest/provreqclient"
 	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest/provreqwrapper"
-	"k8s.io/autoscaler/cluster-autoscaler/resourcequotas"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/scheduling"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
@@ -54,7 +53,7 @@ const (
 )
 
 type checkCapacityProvClass struct {
-	autoscalingCtx                               *ca_context.AutoscalingContext
+	context                                      *context.AutoscalingContext
 	client                                       *provreqclient.ProvisioningRequestClient
 	schedulingSimulator                          *scheduling.HintingSimulator
 	checkCapacityProvisioningRequestMaxBatchSize int
@@ -71,19 +70,18 @@ func New(
 }
 
 func (o *checkCapacityProvClass) Initialize(
-	autoscalingCtx *ca_context.AutoscalingContext,
+	autoscalingContext *context.AutoscalingContext,
 	processors *ca_processors.AutoscalingProcessors,
 	clusterStateRegistry *clusterstate.ClusterStateRegistry,
 	estimatorBuilder estimator.EstimatorBuilder,
 	taintConfig taints.TaintConfig,
 	schedulingSimulator *scheduling.HintingSimulator,
-	quotasTrackerFactory *resourcequotas.TrackerFactory,
 ) {
-	o.autoscalingCtx = autoscalingCtx
+	o.context = autoscalingContext
 	o.schedulingSimulator = schedulingSimulator
-	if autoscalingCtx.CheckCapacityBatchProcessing {
-		o.checkCapacityProvisioningRequestBatchTimebox = autoscalingCtx.CheckCapacityProvisioningRequestBatchTimebox
-		o.checkCapacityProvisioningRequestMaxBatchSize = autoscalingCtx.CheckCapacityProvisioningRequestMaxBatchSize
+	if autoscalingContext.CheckCapacityBatchProcessing {
+		o.checkCapacityProvisioningRequestBatchTimebox = autoscalingContext.CheckCapacityProvisioningRequestBatchTimebox
+		o.checkCapacityProvisioningRequestMaxBatchSize = autoscalingContext.CheckCapacityProvisioningRequestMaxBatchSize
 	} else {
 		o.checkCapacityProvisioningRequestMaxBatchSize = 1
 	}
@@ -99,13 +97,13 @@ func (o *checkCapacityProvClass) Provision(
 	combinedStatus := NewCombinedStatusSet()
 	startTime := time.Now()
 
-	o.autoscalingCtx.ClusterSnapshot.Fork()
-	defer o.autoscalingCtx.ClusterSnapshot.Revert()
+	o.context.ClusterSnapshot.Fork()
+	defer o.context.ClusterSnapshot.Revert()
 
 	// Gather ProvisioningRequests.
 	prs, err := o.getProvisioningRequestsAndPods(unschedulablePods)
 	if err != nil {
-		return status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.NewAutoscalerErrorf(errors.InternalError, "Error fetching provisioning requests and associated pods: %s", err.Error()))
+		return status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.NewAutoscalerError(errors.InternalError, "Error fetching provisioning requests and associated pods: %s", err.Error()))
 	} else if len(prs) == 0 {
 		return &status.ScaleUpStatus{Result: status.ScaleUpNotTried}, nil
 	}
@@ -134,7 +132,7 @@ func (o *checkCapacityProvClass) getProvisioningRequestsAndPods(unschedulablePod
 	if !o.isBatchEnabled() {
 		klog.Info("Processing single provisioning request (non-batch)")
 		prs := provreqclient.ProvisioningRequestsForPods(o.client, unschedulablePods)
-		prs = provreqclient.FilterOutProvisioningClass(prs, v1.ProvisioningClassCheckCapacity, o.autoscalingCtx.CheckCapacityProcessorInstance)
+		prs = provreqclient.FilterOutProvisioningClass(prs, v1.ProvisioningClassCheckCapacity)
 		if len(prs) == 0 {
 			return nil, nil
 		}
@@ -174,14 +172,14 @@ func (o *checkCapacityProvClass) checkCapacityBatch(reqs []provreq.ProvisioningR
 
 // checkCapacity checks if there is capacity, updates combinedStatus and Conditions. If capacity is found, it commits to the clusterSnapshot.
 func (o *checkCapacityProvClass) checkCapacity(unschedulablePods []*apiv1.Pod, provReq *provreqwrapper.ProvisioningRequest, combinedStatus *combinedStatusSet) error {
-	o.autoscalingCtx.ClusterSnapshot.Fork()
+	o.context.ClusterSnapshot.Fork()
 
 	// Case 1: Capacity fits.
-	scheduled, _, err := o.schedulingSimulator.TrySchedulePods(o.autoscalingCtx.ClusterSnapshot, unschedulablePods, scheduling.ScheduleAnywhere, true)
+	scheduled, _, err := o.schedulingSimulator.TrySchedulePods(o.context.ClusterSnapshot, unschedulablePods, scheduling.ScheduleAnywhere, true)
 	if err == nil && len(scheduled) == len(unschedulablePods) {
-		commitError := o.autoscalingCtx.ClusterSnapshot.Commit()
+		commitError := o.context.ClusterSnapshot.Commit()
 		if commitError != nil {
-			o.autoscalingCtx.ClusterSnapshot.Revert()
+			o.context.ClusterSnapshot.Revert()
 			return commitError
 		}
 		combinedStatus.Add(&status.ScaleUpStatus{Result: status.ScaleUpSuccessful})
@@ -189,7 +187,7 @@ func (o *checkCapacityProvClass) checkCapacity(unschedulablePods []*apiv1.Pod, p
 		return nil
 	}
 	// Case 2: Capacity doesn't fit.
-	o.autoscalingCtx.ClusterSnapshot.Revert()
+	o.context.ClusterSnapshot.Revert()
 	combinedStatus.Add(&status.ScaleUpStatus{Result: status.ScaleUpNoOptionsAvailable})
 	if noRetry, ok := provReq.Spec.Parameters[NoRetryParameterKey]; ok && noRetry == "true" {
 		// Failed=true condition triggers retry in Kueue. Otherwise ProvisioningRequest with Provisioned=Failed
@@ -215,7 +213,7 @@ func updateRequests(client *provreqclient.ProvisioningRequestClient, prWrappers 
 			_, updErr := client.UpdateProvisioningRequest(provReq)
 			if updErr != nil {
 				err := fmt.Errorf("failed to update ProvReq %s/%s, err: %v", provReq.Namespace, provReq.Name, updErr)
-				scaleUpStatus, _ := status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.NewAutoscalerErrorf(errors.InternalError, "error during ScaleUp: %s", err.Error()))
+				scaleUpStatus, _ := status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.NewAutoscalerError(errors.InternalError, "error during ScaleUp: %s", err.Error()))
 				lock.Lock()
 				combinedStatus.Add(scaleUpStatus)
 				lock.Unlock()

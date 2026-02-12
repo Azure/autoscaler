@@ -28,12 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/utils/ptr"
 
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	vpa_fake "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned/fake"
 	controllerfetcher "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target/controller_fetcher"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/test"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -97,7 +97,7 @@ func TestUpdateVpaIfNeeded(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.caseName, func(t *testing.T) {
-			fakeClient := vpa_fake.NewSimpleClientset(&vpa_types.VerticalPodAutoscalerList{Items: []vpa_types.VerticalPodAutoscaler{*tc.observedVpa}}) //nolint:staticcheck // https://github.com/kubernetes/autoscaler/issues/8954
+			fakeClient := vpa_fake.NewSimpleClientset(&vpa_types.VerticalPodAutoscalerList{Items: []vpa_types.VerticalPodAutoscaler{*tc.observedVpa}})
 			_, err := UpdateVpaStatusIfNeeded(fakeClient.AutoscalingV1().VerticalPodAutoscalers(tc.updatedVpa.Namespace),
 				tc.updatedVpa.Name, &tc.updatedVpa.Status, &tc.observedVpa.Status)
 			assert.NoError(t, err, "Unexpected error occurred.")
@@ -141,9 +141,19 @@ func TestPodMatchesVPA(t *testing.T) {
 	}
 }
 
+type NilControllerFetcher struct{}
+
+// FindTopMostWellKnownOrScalable returns the same key for that fake implementation
+func (f NilControllerFetcher) FindTopMostWellKnownOrScalable(_ context.Context, _ *controllerfetcher.ControllerKeyWithAPIVersion) (*controllerfetcher.ControllerKeyWithAPIVersion, error) {
+	return nil, nil
+}
+
+var _ controllerfetcher.ControllerFetcher = &NilControllerFetcher{}
+
 func TestGetControllingVPAForPod(t *testing.T) {
 	ctx := context.Background()
 
+	isController := true
 	pod := test.Pod().WithName("test-pod").AddContainer(test.Container().WithName(containerName).WithCPURequest(resource.MustParse("1")).WithMemRequest(resource.MustParse("100M")).Get()).Get()
 	pod.Labels = map[string]string{"app": "testingApp"}
 	pod.OwnerReferences = []meta.OwnerReference{
@@ -151,7 +161,7 @@ func TestGetControllingVPAForPod(t *testing.T) {
 			APIVersion: "apps/v1",
 			Kind:       "StatefulSet",
 			Name:       "test-sts",
-			Controller: ptr.To(true),
+			Controller: &isController,
 		},
 	}
 
@@ -178,7 +188,7 @@ func TestGetControllingVPAForPod(t *testing.T) {
 	// For some Pods (which are *not* under VPA), controllerFetcher.FindTopMostWellKnownOrScalable will return `nil`, e.g. when the Pod owner is a custom resource, which doesn't implement the /scale subresource
 	// See pkg/target/controller_fetcher/controller_fetcher_test.go:393 for testing this behavior
 	// This test case makes sure that GetControllingVPAForPod will just return `nil` in that case as well
-	chosen = GetControllingVPAForPod(ctx, pod, []*VpaWithSelector{{vpaA, parseLabelSelector("app = testingApp")}}, &controllerfetcher.NilControllerFetcher{})
+	chosen = GetControllingVPAForPod(ctx, pod, []*VpaWithSelector{{vpaA, parseLabelSelector("app = testingApp")}}, &NilControllerFetcher{})
 	assert.Nil(t, chosen)
 }
 
@@ -311,7 +321,7 @@ func TestFindParentControllerForPod(t *testing.T) {
 					OwnerReferences: nil,
 				},
 			},
-			ctrlFetcher: &controllerfetcher.NilControllerFetcher{},
+			ctrlFetcher: &NilControllerFetcher{},
 			expected:    nil,
 		},
 		{
@@ -372,24 +382,6 @@ func TestFindParentControllerForPod(t *testing.T) {
 				},
 				ApiVersion: "apps/v1",
 			},
-		},
-		{
-			name: "should not return an error for Node owner reference",
-			pod: &core.Pod{
-				ObjectMeta: meta.ObjectMeta{
-					Namespace: "bar",
-					OwnerReferences: []meta.OwnerReference{
-						{
-							APIVersion: "v1",
-							Controller: ptr.To(true),
-							Kind:       "Node",
-							Name:       "foo",
-						},
-					},
-				},
-			},
-			ctrlFetcher: &controllerfetcher.FakeControllerFetcher{},
-			expected:    nil,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

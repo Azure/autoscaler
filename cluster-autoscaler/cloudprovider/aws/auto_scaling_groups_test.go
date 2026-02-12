@@ -21,11 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
-	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/aws"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/service/autoscaling"
 )
 
 func TestBuildAsg(t *testing.T) {
@@ -59,31 +57,31 @@ func TestCreatePlaceholders(t *testing.T) {
 
 	cases := []struct {
 		name                string
-		desiredCapacity     *int32
-		activities          []autoscalingtypes.Activity
+		desiredCapacity     *int64
+		activities          []*autoscaling.Activity
 		groupLastUpdateTime time.Time
 		describeErr         error
 		asgToCheck          *string
 	}{
 		{
 			name:            "add placeholders successful",
-			desiredCapacity: aws.Int32(10),
+			desiredCapacity: aws.Int64(10),
 		},
 		{
 			name:            "no placeholders needed",
-			desiredCapacity: aws.Int32(0),
+			desiredCapacity: aws.Int64(0),
 		},
 		{
 			name:            "DescribeScalingActivities failed",
-			desiredCapacity: aws.Int32(1),
+			desiredCapacity: aws.Int64(1),
 			describeErr:     errors.New("timeout"),
 		},
 		{
 			name:            "early abort if AWS scaling up fails",
-			desiredCapacity: aws.Int32(1),
-			activities: []autoscalingtypes.Activity{
+			desiredCapacity: aws.Int64(1),
+			activities: []*autoscaling.Activity{
 				{
-					StatusCode: autoscalingtypes.ScalingActivityStatusCodeFailed,
+					StatusCode: aws.String("Failed"),
 					StartTime:  aws.Time(time.Unix(10, 0)),
 				},
 			},
@@ -91,10 +89,10 @@ func TestCreatePlaceholders(t *testing.T) {
 		},
 		{
 			name:            "AWS scaling failed event before CA scale_up",
-			desiredCapacity: aws.Int32(1),
-			activities: []autoscalingtypes.Activity{
+			desiredCapacity: aws.Int64(1),
+			activities: []*autoscaling.Activity{
 				{
-					StatusCode: autoscalingtypes.ScalingActivityStatusCodeFailed,
+					StatusCode: aws.String("Failed"),
 					StartTime:  aws.Time(time.Unix(9, 0)),
 				},
 			},
@@ -102,10 +100,10 @@ func TestCreatePlaceholders(t *testing.T) {
 		},
 		{
 			name:            "asg not registered",
-			desiredCapacity: aws.Int32(10),
-			activities: []autoscalingtypes.Activity{
+			desiredCapacity: aws.Int64(10),
+			activities: []*autoscaling.Activity{
 				{
-					StatusCode: autoscalingtypes.ScalingActivityStatusCodeFailed,
+					StatusCode: aws.String("Failed"),
 					StartTime:  aws.Time(time.Unix(10, 0)),
 				},
 			},
@@ -117,7 +115,7 @@ func TestCreatePlaceholders(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			shouldCallDescribeScalingActivities := true
-			if *tc.desiredCapacity == int32(0) {
+			if *tc.desiredCapacity == int64(0) {
 				shouldCallDescribeScalingActivities = false
 			}
 
@@ -128,12 +126,9 @@ func TestCreatePlaceholders(t *testing.T) {
 
 			a := &autoScalingMock{}
 			if shouldCallDescribeScalingActivities {
-				a.On("DescribeScalingActivities",
-					mock.Anything,
-					&autoscaling.DescribeScalingActivitiesInput{
-						AutoScalingGroupName: asgName,
-					},
-				).Return(
+				a.On("DescribeScalingActivities", &autoscaling.DescribeScalingActivitiesInput{
+					AutoScalingGroupName: asgName,
+				}).Return(
 					&autoscaling.DescribeScalingActivitiesOutput{Activities: tc.activities},
 					tc.describeErr,
 				).Once()
@@ -152,17 +147,17 @@ func TestCreatePlaceholders(t *testing.T) {
 				},
 			}
 
-			groups := []autoscalingtypes.AutoScalingGroup{
+			groups := []*autoscaling.Group{
 				{
 					AutoScalingGroupName: asgName,
-					AvailabilityZones:    []string{"westeros-1a"},
+					AvailabilityZones:    []*string{aws.String("westeros-1a")},
 					DesiredCapacity:      tc.desiredCapacity,
-					Instances:            []autoscalingtypes.Instance{},
+					Instances:            []*autoscaling.Instance{},
 				},
 			}
-			groups = asgCache.createPlaceholdersForDesiredNonStartedInstances(groups)
-			assert.Equal(t, int32(len(groups[0].Instances)), *tc.desiredCapacity)
-			if tc.activities != nil && tc.activities[0].StatusCode == autoscalingtypes.ScalingActivityStatusCodeFailed && tc.activities[0].StartTime.After(tc.groupLastUpdateTime) && asgName == registeredAsgName {
+			asgCache.createPlaceholdersForDesiredNonStartedInstances(groups)
+			assert.Equal(t, int64(len(groups[0].Instances)), *tc.desiredCapacity)
+			if tc.activities != nil && *tc.activities[0].StatusCode == "Failed" && tc.activities[0].StartTime.After(tc.groupLastUpdateTime) && asgName == registeredAsgName {
 				assert.Equal(t, *groups[0].Instances[0].HealthStatus, placeholderUnfulfillableStatus)
 			} else if len(groups[0].Instances) > 0 {
 				assert.Equal(t, *groups[0].Instances[0].HealthStatus, "")

@@ -24,10 +24,10 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
-	fwk "k8s.io/kube-scheduler/framework"
 	scheduler_config "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	scheduler_scheme "k8s.io/kubernetes/pkg/scheduler/apis/config/scheme"
 	scheduler_validation "k8s.io/kubernetes/pkg/scheduler/apis/config/validation"
+	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 const (
@@ -79,14 +79,14 @@ func isHugePageResourceName(name apiv1.ResourceName) bool {
 }
 
 // ResourceToResourceList returns a resource list of the resource.
-func ResourceToResourceList(r fwk.Resource) apiv1.ResourceList {
+func ResourceToResourceList(r *schedulerframework.Resource) apiv1.ResourceList {
 	result := apiv1.ResourceList{
-		apiv1.ResourceCPU:              *resource.NewMilliQuantity(r.GetMilliCPU(), resource.DecimalSI),
-		apiv1.ResourceMemory:           *resource.NewQuantity(r.GetMemory(), resource.BinarySI),
-		apiv1.ResourcePods:             *resource.NewQuantity(int64(r.GetAllowedPodNumber()), resource.BinarySI),
-		apiv1.ResourceEphemeralStorage: *resource.NewQuantity(r.GetEphemeralStorage(), resource.BinarySI),
+		apiv1.ResourceCPU:              *resource.NewMilliQuantity(r.MilliCPU, resource.DecimalSI),
+		apiv1.ResourceMemory:           *resource.NewQuantity(r.Memory, resource.BinarySI),
+		apiv1.ResourcePods:             *resource.NewQuantity(int64(r.AllowedPodNumber), resource.BinarySI),
+		apiv1.ResourceEphemeralStorage: *resource.NewQuantity(r.EphemeralStorage, resource.BinarySI),
 	}
-	for rName, rQuant := range r.GetScalarResources() {
+	for rName, rQuant := range r.ScalarResources {
 		if isHugePageResourceName(rName) {
 			result[rName] = *resource.NewQuantity(rQuant, resource.BinarySI)
 		} else {
@@ -126,15 +126,15 @@ func ConfigFromPath(path string) (*scheduler_config.KubeSchedulerConfiguration, 
 	return cfgObj, nil
 }
 
-// SchedulersMap returns a map of scheduler names as keys, and values are set to true
-// Also sets "" (empty string) to true if default scheduler is in the list
-func SchedulersMap(schedulers []string) map[string]bool {
-	schedulersMap := make(map[string]bool, len(schedulers))
-	for _, scheduler := range schedulers {
-		schedulersMap[scheduler] = true
+// GetBypassedSchedulersMap returns a map of scheduler names that should be bypassed as keys, and values are set to true
+// Also sets "" (empty string) to true if default scheduler is bypassed
+func GetBypassedSchedulersMap(bypassedSchedulers []string) map[string]bool {
+	bypassedSchedulersMap := make(map[string]bool, len(bypassedSchedulers))
+	for _, scheduler := range bypassedSchedulers {
+		bypassedSchedulersMap[scheduler] = true
 	}
-	if found := schedulersMap[apiv1.DefaultSchedulerName]; found {
-		schedulersMap[""] = true
+	if canBypass := bypassedSchedulersMap[apiv1.DefaultSchedulerName]; canBypass {
+		bypassedSchedulersMap[""] = true
 	}
-	return schedulersMap
+	return bypassedSchedulersMap
 }

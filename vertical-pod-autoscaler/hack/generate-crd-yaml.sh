@@ -22,7 +22,6 @@ REPOSITORY_ROOT=$(realpath $(dirname ${BASH_SOURCE})/..)
 CRD_OPTS=crd:allowDangerousTypes=true
 APIS_PATH=${REPOSITORY_ROOT}/pkg/apis
 OUTPUT=${REPOSITORY_ROOT}/deploy/vpa-v1-crd-gen.yaml
-CHARTS_CRD_DIR=${REPOSITORY_ROOT}/charts/vertical-pod-autoscaler/crds
 WORKSPACE=$(mktemp -d)
 
 function cleanup() {
@@ -33,7 +32,7 @@ trap cleanup EXIT
 if [[ -z $(which controller-gen) ]]; then
     (
         cd $WORKSPACE
-	      go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5
+	      go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.9.2
     )
     CONTROLLER_GEN=${GOBIN:-$(go env GOPATH)/bin}/controller-gen
 else
@@ -45,9 +44,13 @@ ${CONTROLLER_GEN} ${CRD_OPTS} paths="${APIS_PATH}/..." output:crd:dir="\"${WORKS
 grep -v -e 'map keys must be strings, not int' -e 'not all generators ran successfully' -e 'usage' ${WORKSPACE}/errors.log \
     && { echo "Failed to generate CRD YAMLs."; exit 1; }
 
-cat "${WORKSPACE}/autoscaling.k8s.io_verticalpodautoscalercheckpoints.yaml" > ${OUTPUT}
-cat "${WORKSPACE}/autoscaling.k8s.io_verticalpodautoscalers.yaml" >> ${OUTPUT}
-
-# Copy the generated CRD to the charts directory
-cp ${OUTPUT} ${CHARTS_CRD_DIR}/vpa-v1-crd-gen.yaml
-echo "CRD copied to ${CHARTS_CRD_DIR}/vpa-v1-crd-gen.yaml"
+cd ${WORKSPACE}
+cat <<EOF > kustomization.yaml
+resources:
+- autoscaling.k8s.io_verticalpodautoscalers.yaml
+- autoscaling.k8s.io_verticalpodautoscalercheckpoints.yaml
+commonAnnotations:
+  "api-approved.kubernetes.io": "https://github.com/kubernetes/kubernetes/pull/63797"
+EOF
+echo --- > ${OUTPUT}
+kubectl kustomize . >> ${OUTPUT}

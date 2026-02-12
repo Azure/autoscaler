@@ -19,16 +19,16 @@ limitations under the License.
 package v1
 
 import (
-	context "context"
+	"context"
 	time "time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
-	apisautoscalingk8siov1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	autoscalingk8siov1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	versioned "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned"
 	internalinterfaces "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/informers/externalversions/internalinterfaces"
-	autoscalingk8siov1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/listers/autoscaling.k8s.io/v1"
+	v1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/listers/autoscaling.k8s.io/v1"
 	cache "k8s.io/client-go/tools/cache"
 )
 
@@ -36,7 +36,7 @@ import (
 // VerticalPodAutoscalers.
 type VerticalPodAutoscalerInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() autoscalingk8siov1.VerticalPodAutoscalerLister
+	Lister() v1.VerticalPodAutoscalerLister
 }
 
 type verticalPodAutoscalerInformer struct {
@@ -57,33 +57,21 @@ func NewVerticalPodAutoscalerInformer(client versioned.Interface, namespace stri
 // one. This reduces memory footprint and number of connections to the server.
 func NewFilteredVerticalPodAutoscalerInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
 	return cache.NewSharedIndexInformer(
-		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
+		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.AutoscalingV1().VerticalPodAutoscalers(namespace).List(context.Background(), options)
+				return client.AutoscalingV1().VerticalPodAutoscalers(namespace).List(context.TODO(), options)
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.AutoscalingV1().VerticalPodAutoscalers(namespace).Watch(context.Background(), options)
+				return client.AutoscalingV1().VerticalPodAutoscalers(namespace).Watch(context.TODO(), options)
 			},
-			ListWithContextFunc: func(ctx context.Context, options metav1.ListOptions) (runtime.Object, error) {
-				if tweakListOptions != nil {
-					tweakListOptions(&options)
-				}
-				return client.AutoscalingV1().VerticalPodAutoscalers(namespace).List(ctx, options)
-			},
-			WatchFuncWithContext: func(ctx context.Context, options metav1.ListOptions) (watch.Interface, error) {
-				if tweakListOptions != nil {
-					tweakListOptions(&options)
-				}
-				return client.AutoscalingV1().VerticalPodAutoscalers(namespace).Watch(ctx, options)
-			},
-		}, client),
-		&apisautoscalingk8siov1.VerticalPodAutoscaler{},
+		},
+		&autoscalingk8siov1.VerticalPodAutoscaler{},
 		resyncPeriod,
 		indexers,
 	)
@@ -94,9 +82,9 @@ func (f *verticalPodAutoscalerInformer) defaultInformer(client versioned.Interfa
 }
 
 func (f *verticalPodAutoscalerInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&apisautoscalingk8siov1.VerticalPodAutoscaler{}, f.defaultInformer)
+	return f.factory.InformerFor(&autoscalingk8siov1.VerticalPodAutoscaler{}, f.defaultInformer)
 }
 
-func (f *verticalPodAutoscalerInformer) Lister() autoscalingk8siov1.VerticalPodAutoscalerLister {
-	return autoscalingk8siov1.NewVerticalPodAutoscalerLister(f.Informer().GetIndexer())
+func (f *verticalPodAutoscalerInformer) Lister() v1.VerticalPodAutoscalerLister {
+	return v1.NewVerticalPodAutoscalerLister(f.Informer().GetIndexer())
 }

@@ -18,7 +18,7 @@ package binpacking
 
 import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 )
 
@@ -36,31 +36,31 @@ func NewCombinedLimiter(limiters []BinpackingLimiter) *CombinedLimiter {
 }
 
 // InitBinpacking initialises all the underline limiters.
-func (l *CombinedLimiter) InitBinpacking(autoscalingCtx *ca_context.AutoscalingContext, nodeGroups []cloudprovider.NodeGroup) {
+func (l *CombinedLimiter) InitBinpacking(context *context.AutoscalingContext, nodeGroups []cloudprovider.NodeGroup) {
 	for _, limiter := range l.limiters {
-		limiter.InitBinpacking(autoscalingCtx, nodeGroups)
+		limiter.InitBinpacking(context, nodeGroups)
 	}
 }
 
 // MarkProcessed marks the nodegroup as processed in all underline limiters.
-func (l *CombinedLimiter) MarkProcessed(autoscalingCtx *ca_context.AutoscalingContext, nodegroupId string) {
+func (l *CombinedLimiter) MarkProcessed(context *context.AutoscalingContext, nodegroupId string) {
 	for _, limiter := range l.limiters {
-		limiter.MarkProcessed(autoscalingCtx, nodegroupId)
+		limiter.MarkProcessed(context, nodegroupId)
 	}
 }
 
 // StopBinpacking returns true if at least one of the underline limiter met the stop condition.
-func (l *CombinedLimiter) StopBinpacking(autoscalingCtx *ca_context.AutoscalingContext, evaluatedOptions []expander.Option) bool {
+func (l *CombinedLimiter) StopBinpacking(context *context.AutoscalingContext, evaluatedOptions []expander.Option) bool {
 	stopCondition := false
 	for _, limiter := range l.limiters {
-		stopCondition = limiter.StopBinpacking(autoscalingCtx, evaluatedOptions) || stopCondition
+		stopCondition = limiter.StopBinpacking(context, evaluatedOptions) || stopCondition
 	}
 	return stopCondition
 }
 
 // FinalizeBinpacking will call FinalizeBinpacking for all the underline limiters.
-func (l *CombinedLimiter) FinalizeBinpacking(autoscalingCtx *ca_context.AutoscalingContext, finalOptions []expander.Option) {
+func (l *CombinedLimiter) FinalizeBinpacking(context *context.AutoscalingContext, finalOptions []expander.Option) {
 	for _, limiter := range l.limiters {
-		limiter.FinalizeBinpacking(autoscalingCtx, finalOptions)
+		limiter.FinalizeBinpacking(context, finalOptions)
 	}
 }

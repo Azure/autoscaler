@@ -27,8 +27,8 @@ function print_help {
   echo " - recommender-externalmetrics"
   echo " - updater"
   echo " - admission-controller"
-  echo " - actuation"
   echo " - full-vpa"
+
 }
 
 if [ $# -eq 0 ]; then
@@ -74,12 +74,8 @@ echo "Deleting KIND cluster 'kind'."
 kind delete cluster -n kind -q
 
 echo "Creating KIND cluster 'kind'"
-KIND_VERSION="kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f"
-if ! kind create cluster --image=${KIND_VERSION}; then
-    echo "Failed to create KIND cluster. Exiting. Make sure kind version is updated."
-    echo "Available versions: https://github.com/kubernetes-sigs/kind/releases"
-    exit 1
-fi
+KIND_VERSION="kindest/node:v1.26.3"
+kind create cluster --image=${KIND_VERSION} 
 
 echo "Building metrics-pump image"
 docker build -t localhost:5001/write-metrics:dev -f ${SCRIPT_ROOT}/hack/e2e/Dockerfile.externalmetrics-writer ${SCRIPT_ROOT}/hack
@@ -87,25 +83,17 @@ echo "  loading image into kind"
 kind load docker-image localhost:5001/write-metrics:dev
 
 
-export FEATURE_GATES=""
-export TEST_WITH_FEATURE_GATES_ENABLED=""
-
-if [ "${ENABLE_ALL_FEATURE_GATES:-}" == "true" ] ; then
-  export FEATURE_GATES='AllAlpha=true,AllBeta=true'
-  export TEST_WITH_FEATURE_GATES_ENABLED="true"
-fi
-
 case ${SUITE} in
-  recommender|recommender-externalmetrics|updater|admission-controller|actuation|full-vpa)
+  recommender|recommender-externalmetrics|updater|admission-controller|full-vpa)
     ${SCRIPT_ROOT}/hack/vpa-down.sh
     echo " ** Deploying for suite ${SUITE}"
     ${SCRIPT_ROOT}/hack/deploy-for-e2e-locally.sh ${SUITE}
 
     echo " ** Running suite ${SUITE}"
     if [ ${SUITE} == recommender-externalmetrics ]; then
-       ARTIFACTS=./workspace/_artifacts ${SCRIPT_ROOT}/hack/run-e2e-tests.sh recommender
+       WORKSPACE=./workspace/_artifacts ${SCRIPT_ROOT}/hack/run-e2e-tests.sh recommender
     else
-      ARTIFACTS=./workspace/_artifacts ${SCRIPT_ROOT}/hack/run-e2e-tests.sh ${SUITE}
+      WORKSPACE=./workspace/_artifacts ${SCRIPT_ROOT}/hack/run-e2e-tests.sh ${SUITE}
     fi
     ;;
   *)

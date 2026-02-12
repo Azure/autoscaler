@@ -1,8 +1,6 @@
 package metadata
 
 import (
-	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"net"
@@ -13,7 +11,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud/exp/ctxutil"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud/internal/instrumentation"
 )
 
@@ -75,33 +72,24 @@ func NewClient(options ...ClientOption) *Client {
 
 	if client.instrumentationRegistry != nil {
 		i := instrumentation.New("metadata", client.instrumentationRegistry)
-		client.httpClient.Transport = i.InstrumentedRoundTripper(client.httpClient.Transport)
+		client.httpClient.Transport = i.InstrumentedRoundTripper()
 	}
 	return client
 }
 
 // get executes an HTTP request against the API.
 func (c *Client) get(path string) (string, error) {
-	ctx := ctxutil.SetOpPath(context.Background(), path)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+path, http.NoBody)
+	url := c.endpoint + path
+	resp, err := c.httpClient.Get(url)
 	if err != nil {
 		return "", err
 	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
-
-	body := string(bytes.TrimSpace(bodyBytes))
-
+	body := string(bodyBytes)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return body, fmt.Errorf("response status was %d", resp.StatusCode)
 	}

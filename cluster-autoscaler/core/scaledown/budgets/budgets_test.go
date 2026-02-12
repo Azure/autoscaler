@@ -23,7 +23,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/stretchr/testify/assert"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,10 +30,8 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown/deletiontracker"
-	"k8s.io/autoscaler/cluster-autoscaler/core/test"
-	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 func TestCropNodesToBudgets(t *testing.T) {
@@ -52,7 +49,6 @@ func TestCropNodesToBudgets(t *testing.T) {
 		drain                    []*NodeGroupView
 		wantEmpty                []*NodeGroupView
 		wantDrain                []*NodeGroupView
-		otherNodes               []*NodeGroupView
 	}{
 		"no nodes": {
 			empty:     []*NodeGroupView{},
@@ -205,8 +201,8 @@ func TestCropNodesToBudgets(t *testing.T) {
 		// Empty and drain nodes together.
 		"empty&drain nodes within max limits, no deletions in progress": {
 			empty:     generateNodeGroupViewList(testNg, 0, 5),
-			drain:     generateNodeGroupViewList(testNg2, 0, 5),
-			wantDrain: generateNodeGroupViewList(testNg2, 0, 5),
+			drain:     generateNodeGroupViewList(testNg, 0, 5),
+			wantDrain: generateNodeGroupViewList(testNg, 0, 5),
 			wantEmpty: generateNodeGroupViewList(testNg, 0, 5),
 		},
 		"empty&drain atomic nodes within max limits, no deletions in progress": {
@@ -217,8 +213,8 @@ func TestCropNodesToBudgets(t *testing.T) {
 		},
 		"empty&drain nodes exceeding overall limit, no deletions in progress": {
 			empty:     generateNodeGroupViewList(testNg, 0, 8),
-			drain:     generateNodeGroupViewList(testNg2, 0, 8),
-			wantDrain: generateNodeGroupViewList(testNg2, 0, 2),
+			drain:     generateNodeGroupViewList(testNg, 0, 8),
+			wantDrain: generateNodeGroupViewList(testNg, 0, 2),
 			wantEmpty: generateNodeGroupViewList(testNg, 0, 8),
 		},
 		"empty&drain atomic nodes exceeding overall limit, no deletions in progress": {
@@ -245,18 +241,11 @@ func TestCropNodesToBudgets(t *testing.T) {
 			wantEmpty: generateNodeGroupViewList(atomic8, 0, 2),
 			wantDrain: generateNodeGroupViewList(atomic8, 2, 8),
 		},
-		"empty&drain atomic nodes in same group not matching registered node group size, no deletions in progress": {
-			empty:      generateNodeGroupViewList(atomic8, 0, 2),
-			drain:      generateNodeGroupViewList(atomic8, 2, 4),
-			wantEmpty:  []*NodeGroupView{},
-			wantDrain:  []*NodeGroupView{},
-			otherNodes: generateNodeGroupViewList(atomic8, 4, 8),
-		},
-		"empty&drain atomic nodes in same group matching registered node group size, no deletions in progress": {
+		"empty&drain atomic nodes in same group not matching node group size, no deletions in progress": {
 			empty:     generateNodeGroupViewList(atomic8, 0, 2),
 			drain:     generateNodeGroupViewList(atomic8, 2, 4),
-			wantEmpty: generateNodeGroupViewList(atomic8, 0, 2),
-			wantDrain: generateNodeGroupViewList(atomic8, 2, 4),
+			wantEmpty: []*NodeGroupView{},
+			wantDrain: []*NodeGroupView{},
 		},
 		"empty&drain atomic nodes exceeding drain limit, no deletions in progress": {
 			empty:     generateNodeGroupViewList(atomic4, 0, 4),
@@ -296,14 +285,14 @@ func TestCropNodesToBudgets(t *testing.T) {
 		},
 		"empty&drain nodes exceeding drain limit, no deletions in progress": {
 			empty:     generateNodeGroupViewList(testNg, 0, 2),
-			drain:     generateNodeGroupViewList(testNg2, 0, 8),
-			wantDrain: generateNodeGroupViewList(testNg2, 0, 5),
+			drain:     generateNodeGroupViewList(testNg, 0, 8),
+			wantDrain: generateNodeGroupViewList(testNg, 0, 5),
 			wantEmpty: generateNodeGroupViewList(testNg, 0, 2),
 		},
 		"empty&drain nodes with deletions in progress, 0 overall budget left": {
 			emptyDeletionsInProgress: 10,
 			empty:                    generateNodeGroupViewList(testNg, 0, 5),
-			drain:                    generateNodeGroupViewList(testNg2, 0, 5),
+			drain:                    generateNodeGroupViewList(testNg, 0, 5),
 			wantEmpty:                []*NodeGroupView{},
 			wantDrain:                []*NodeGroupView{},
 		},
@@ -324,14 +313,14 @@ func TestCropNodesToBudgets(t *testing.T) {
 		"empty&drain nodes with deletions in progress, overall budget exceeded (shouldn't happen, just a sanity check)": {
 			emptyDeletionsInProgress: 50,
 			empty:                    generateNodeGroupViewList(testNg, 0, 5),
-			drain:                    generateNodeGroupViewList(testNg2, 0, 5),
+			drain:                    generateNodeGroupViewList(testNg, 0, 5),
 			wantEmpty:                []*NodeGroupView{},
 			wantDrain:                []*NodeGroupView{},
 		},
 		"empty&drain nodes with deletions in progress, 0 drain budget left": {
 			drainDeletionsInProgress: 5,
 			empty:                    generateNodeGroupViewList(testNg, 0, 5),
-			drain:                    generateNodeGroupViewList(testNg2, 0, 5),
+			drain:                    generateNodeGroupViewList(testNg, 0, 5),
 			wantEmpty:                generateNodeGroupViewList(testNg, 0, 5),
 			wantDrain:                []*NodeGroupView{},
 		},
@@ -345,7 +334,7 @@ func TestCropNodesToBudgets(t *testing.T) {
 		"empty&drain nodes with deletions in progress, drain budget exceeded (shouldn't happen, just a sanity check)": {
 			drainDeletionsInProgress: 9,
 			empty:                    generateNodeGroupViewList(testNg, 0, 5),
-			drain:                    generateNodeGroupViewList(testNg2, 0, 5),
+			drain:                    generateNodeGroupViewList(testNg, 0, 5),
 			wantEmpty:                generateNodeGroupViewList(testNg, 0, 1),
 			wantDrain:                []*NodeGroupView{},
 		},
@@ -353,7 +342,7 @@ func TestCropNodesToBudgets(t *testing.T) {
 			emptyDeletionsInProgress: 5,
 			drainDeletionsInProgress: 3,
 			empty:                    generateNodeGroupViewList(testNg, 0, 5),
-			drain:                    generateNodeGroupViewList(testNg2, 0, 2),
+			drain:                    generateNodeGroupViewList(testNg, 0, 2),
 			wantEmpty:                generateNodeGroupViewList(testNg, 0, 2),
 			wantDrain:                []*NodeGroupView{},
 		},
@@ -361,17 +350,17 @@ func TestCropNodesToBudgets(t *testing.T) {
 			emptyDeletionsInProgress: 5,
 			drainDeletionsInProgress: 3,
 			empty:                    generateNodeGroupViewList(testNg, 0, 1),
-			drain:                    generateNodeGroupViewList(testNg2, 0, 2),
+			drain:                    generateNodeGroupViewList(testNg, 0, 2),
 			wantEmpty:                generateNodeGroupViewList(testNg, 0, 1),
-			wantDrain:                generateNodeGroupViewList(testNg2, 0, 1),
+			wantDrain:                generateNodeGroupViewList(testNg, 0, 1),
 		},
 		"empty&drain nodes with deletions in progress, drain budget exceeded": {
 			emptyDeletionsInProgress: 1,
 			drainDeletionsInProgress: 3,
 			empty:                    generateNodeGroupViewList(testNg, 0, 4),
-			drain:                    generateNodeGroupViewList(testNg2, 0, 5),
+			drain:                    generateNodeGroupViewList(testNg, 0, 5),
 			wantEmpty:                generateNodeGroupViewList(testNg, 0, 4),
-			wantDrain:                generateNodeGroupViewList(testNg2, 0, 2),
+			wantDrain:                generateNodeGroupViewList(testNg, 0, 2),
 		},
 		"empty&drain atomic nodes with deletions in progress, overall budget exceeded, only empty nodes fit": {
 			emptyDeletionsInProgress: 5,
@@ -431,28 +420,26 @@ func TestCropNodesToBudgets(t *testing.T) {
 		},
 	} {
 		t.Run(tn, func(t *testing.T) {
-			provider := testprovider.NewTestCloudProviderBuilder().WithOnScaleDown(func(nodeGroup string, node string) error {
+			provider := testprovider.NewTestCloudProvider(nil, func(nodeGroup string, node string) error {
 				return nil
-			}).Build()
-			allNodes := []*apiv1.Node{}
-			for _, bucket := range append(append(tc.empty, tc.drain...), tc.otherNodes...) {
+			})
+			for _, bucket := range append(tc.empty, tc.drain...) {
 				bucket.Group.(*testprovider.TestNodeGroup).SetCloudProvider(provider)
 				provider.InsertNodeGroup(bucket.Group)
 				for _, node := range bucket.Nodes {
 					provider.AddNode(bucket.Group.Id(), node)
 				}
-				allNodes = append(allNodes, bucket.Nodes...)
 			}
 
-			options := config.AutoscalingOptions{
-				MaxScaleDownParallelism:     10,
-				MaxDrainParallelism:         5,
-				NodeDeletionBatcherInterval: 0 * time.Second,
-				NodeDeleteDelayAfterTaint:   1 * time.Second,
+			ctx := &context.AutoscalingContext{
+				AutoscalingOptions: config.AutoscalingOptions{
+					MaxScaleDownParallelism:     10,
+					MaxDrainParallelism:         5,
+					NodeDeletionBatcherInterval: 0 * time.Second,
+					NodeDeleteDelayAfterTaint:   1 * time.Second,
+				},
+				CloudProvider: provider,
 			}
-
-			autoscalingCtx, err := test.NewScaleTestAutoscalingContext(options, &fake.Clientset{}, nil, provider, nil, nil, nil)
-			assert.NoError(t, err)
 			ndt := deletiontracker.NewNodeDeletionTracker(1 * time.Hour)
 			for i := 0; i < tc.emptyDeletionsInProgress; i++ {
 				ndt.StartDeletion("ng1", fmt.Sprintf("empty-node-%d", i))
@@ -468,8 +455,7 @@ func TestCropNodesToBudgets(t *testing.T) {
 				drainList = append(drainList, bucket.Nodes...)
 			}
 
-			clustersnapshot.InitializeClusterSnapshotOrDie(t, autoscalingCtx.ClusterSnapshot, allNodes, nil)
-			budgeter := NewScaleDownBudgetProcessor(&autoscalingCtx)
+			budgeter := NewScaleDownBudgetProcessor(ctx)
 			gotEmpty, gotDrain := budgeter.CropNodes(ndt, emptyList, drainList)
 			if diff := cmp.Diff(tc.wantEmpty, gotEmpty, cmpopts.EquateEmpty(), transformNodeGroupView); diff != "" {
 				t.Errorf("cropNodesToBudgets empty nodes diff (-want +got):\n%s", diff)
@@ -524,9 +510,6 @@ func generateNodeGroupViewList(ng cloudprovider.NodeGroup, from, to int) []*Node
 func generateNode(name string) *apiv1.Node {
 	return &apiv1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: apiv1.NodeSpec{
-			ProviderID: name,
-		},
 		Status: apiv1.NodeStatus{
 			Allocatable: apiv1.ResourceList{
 				apiv1.ResourceCPU:    resource.MustParse("8"),

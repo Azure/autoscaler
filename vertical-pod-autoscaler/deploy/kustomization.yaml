@@ -1,6 +1,5 @@
 resources:
 - admission-controller-deployment.yaml
-- admission-controller-service.yaml
 - recommender-deployment.yaml
 - updater-deployment.yaml
 - vpa-rbac.yaml

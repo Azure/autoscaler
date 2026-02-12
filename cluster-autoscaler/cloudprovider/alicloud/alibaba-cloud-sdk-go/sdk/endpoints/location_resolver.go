@@ -89,10 +89,9 @@ func (resolver *LocationResolver) TryResolve(param *ResolveParam) (endpoint stri
 		return
 	}
 
-	content := response.GetHttpContentString()
-	err = json.Unmarshal([]byte(content), &getEndpointResponse)
+	err = json.Unmarshal([]byte(response.GetHttpContentString()), &getEndpointResponse)
 	if err != nil {
-		klog.Errorf("failed to resolve endpoint, error: %v, response: %s", err, content)
+		klog.Errorf("failed to unmarshal endpoint response, error: %v", err)
 		support = false
 		return
 	}
@@ -154,7 +153,7 @@ type EndpointsObj struct {
 
 // EndpointObj wrapper endpoint
 type EndpointObj struct {
-	Protocols   json.RawMessage
+	Protocols   map[string]string
 	Type        string
 	Namespace   string
 	Id          string

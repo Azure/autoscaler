@@ -18,7 +18,6 @@ package controllerfetcher
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -32,7 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery"
-	cacheddiscovery "k8s.io/client-go/discovery/cached/memory"
+	cacheddiscovery "k8s.io/client-go/discovery/cached"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	kube_client "k8s.io/client-go/kubernetes"
@@ -59,9 +58,6 @@ const (
 const (
 	discoveryResetPeriod time.Duration = 5 * time.Minute
 )
-
-// ErrNodeInvalidOwner is thrown when a Pod is owned by a Node.
-var ErrNodeInvalidOwner = errors.New("node is not a valid owner")
 
 // ControllerKey identifies a controller.
 type ControllerKey struct {
@@ -115,8 +111,7 @@ func (f *controllerFetcher) Start(ctx context.Context, loopPeriod time.Duration)
 func NewControllerFetcher(config *rest.Config, kubeClient kube_client.Interface, factory informers.SharedInformerFactory, betweenRefreshes, lifeTime time.Duration, jitterFactor float64) *controllerFetcher {
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
-		klog.ErrorS(err, "Could not create discoveryClient")
-		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+		klog.Fatalf("Could not create discoveryClient: %v", err)
 	}
 	resolver := scale.NewDiscoveryScaleKindResolver(discoveryClient)
 	restClient := kubeClient.CoreV1().RESTClient()
@@ -134,6 +129,17 @@ func NewControllerFetcher(config *rest.Config, kubeClient kube_client.Interface,
 		replicationController: factory.Core().V1().ReplicationControllers().Informer(),
 		job:                   factory.Batch().V1().Jobs().Informer(),
 		cronJob:               factory.Batch().V1().CronJobs().Informer(),
+	}
+
+	for kind, informer := range informersMap {
+		stopCh := make(chan struct{})
+		go informer.Run(stopCh)
+		synced := cache.WaitForCacheSync(stopCh, informer.HasSynced)
+		if !synced {
+			klog.V(0).InfoS("Initial sync failed", "kind", kind)
+		} else {
+			klog.InfoS("Initial sync completed", "kind", kind)
+		}
 	}
 
 	scaleNamespacer := scale.New(restClient, mapper, dynamic.LegacyAPIPathResolverFunc, resolver)
@@ -190,7 +196,7 @@ func getParentOfWellKnownController(informer cache.SharedIndexInformer, controll
 		return getOwnerController(apiObj.OwnerReferences, namespace), nil
 	}
 
-	return nil, errors.New("don't know how to read owner controller")
+	return nil, fmt.Errorf("don't know how to read owner controller")
 }
 
 func (f *controllerFetcher) getParentOfController(ctx context.Context, controllerKey ControllerKeyWithAPIVersion) (*ControllerKeyWithAPIVersion, error) {
@@ -210,7 +216,7 @@ func (f *controllerFetcher) getParentOfController(ctx context.Context, controlle
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("unhandled targetRef %s / %s / %s, last error %w",
+		return nil, fmt.Errorf("Unhandled targetRef %s / %s / %s, last error %v",
 			controllerKey.ApiVersion, controllerKey.Kind, controllerKey.Name, err)
 	}
 
@@ -226,14 +232,14 @@ func (c *ControllerKeyWithAPIVersion) groupKind() (schema.GroupKind, error) {
 
 	groupKind := schema.GroupKind{
 		Group: groupVersion.Group,
-		Kind:  c.Kind,
+		Kind:  c.ControllerKey.Kind,
 	}
 
 	return groupKind, nil
 }
 
 func (f *controllerFetcher) isWellKnown(key *ControllerKeyWithAPIVersion) bool {
-	kind := wellKnownController(key.Kind)
+	kind := wellKnownController(key.ControllerKey.Kind)
 	_, exists := f.informersMap[kind]
 	return exists
 }
@@ -252,7 +258,7 @@ func (f *controllerFetcher) isWellKnownOrScalable(ctx context.Context, key *Cont
 		return true
 	}
 
-	// if not well known check if it supports scaling
+	//if not well known check if it supports scaling
 	groupKind, err := key.groupKind()
 	if err != nil {
 		klog.ErrorS(err, "Could not find groupKind", "object", klog.KRef(key.Namespace, key.Name))
@@ -284,7 +290,7 @@ func (f *controllerFetcher) getOwnerForScaleResource(ctx context.Context, groupK
 		// Some pods specify nodes as their owners. This causes performance problems
 		// in big clusters when VPA tries to get all nodes. We know nodes aren't
 		// valid controllers so we can skip trying to fetch them.
-		return nil, ErrNodeInvalidOwner
+		return nil, fmt.Errorf("node is not a valid owner")
 	}
 	mappings, err := f.mapper.RESTMappings(groupKind)
 	if err != nil {
@@ -335,7 +341,7 @@ func (f *controllerFetcher) FindTopMostWellKnownOrScalable(ctx context.Context, 
 
 		_, alreadyVisited := visited[*owner]
 		if alreadyVisited {
-			return nil, errors.New("cycle detected in ownership chain")
+			return nil, fmt.Errorf("Cycle detected in ownership chain")
 		}
 		visited[*key] = true
 

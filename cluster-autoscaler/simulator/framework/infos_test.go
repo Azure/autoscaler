@@ -22,10 +22,9 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	fwk "k8s.io/kube-scheduler/framework"
 
 	apiv1 "k8s.io/api/core/v1"
-	resourceapi "k8s.io/api/resource/v1"
+	resourceapi "k8s.io/api/resource/v1alpha3"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/test"
@@ -33,8 +32,7 @@ import (
 )
 
 func TestNodeInfo(t *testing.T) {
-	nodeName := "test-node"
-	node := test.BuildTestNode(nodeName, 1000, 1024)
+	node := test.BuildTestNode("test-node", 1000, 1024)
 	pods := []*apiv1.Pod{
 		// Use pods requesting host-ports to make sure that NodeInfo fields other than node and Pods also
 		// get set correctly (in this case - the UsedPorts field).
@@ -45,7 +43,6 @@ func TestNodeInfo(t *testing.T) {
 		test.BuildTestPod("regular-pod-1", 100, 16),
 		test.BuildTestPod("regular-pod-2", 100, 16),
 	}
-	extraPod := test.BuildTestPod("extra-pod", 1, 1)
 	schedulerNodeInfo := newSchedNodeInfo(node, pods)
 	slices := []*resourceapi.ResourceSlice{
 		{
@@ -53,9 +50,9 @@ func TestNodeInfo(t *testing.T) {
 				Name: "test-node-slice-0",
 			},
 			Spec: resourceapi.ResourceSliceSpec{
-				NodeName: &nodeName,
+				NodeName: "test-node",
 				Driver:   "test.driver.com",
-				Pool:     resourceapi.ResourcePool{Name: nodeName, Generation: 13, ResourceSliceCount: 2},
+				Pool:     resourceapi.ResourcePool{Name: "test-node", Generation: 13, ResourceSliceCount: 2},
 				Devices:  []resourceapi.Device{{Name: "device-0"}, {Name: "device-1"}},
 			}},
 		{
@@ -63,9 +60,9 @@ func TestNodeInfo(t *testing.T) {
 				Name: "test-node-slice-1",
 			},
 			Spec: resourceapi.ResourceSliceSpec{
-				NodeName: &nodeName,
+				NodeName: "test-node",
 				Driver:   "test.driver.com",
-				Pool:     resourceapi.ResourcePool{Name: nodeName, Generation: 13, ResourceSliceCount: 2},
+				Pool:     resourceapi.ResourcePool{Name: "test-node", Generation: 13, ResourceSliceCount: 2},
 				Devices:  []resourceapi.Device{{Name: "device-2"}, {Name: "device-3"}},
 			},
 		},
@@ -73,14 +70,14 @@ func TestNodeInfo(t *testing.T) {
 
 	for _, tc := range []struct {
 		testName                string
-		modFn                   func(info fwk.NodeInfo) *NodeInfo
-		wantSchedNodeInfo       fwk.NodeInfo
+		modFn                   func(info *schedulerframework.NodeInfo) *NodeInfo
+		wantSchedNodeInfo       *schedulerframework.NodeInfo
 		wantLocalResourceSlices []*resourceapi.ResourceSlice
 		wantPods                []*PodInfo
 	}{
 		{
 			testName: "wrapping via NewNodeInfo",
-			modFn: func(info fwk.NodeInfo) *NodeInfo {
+			modFn: func(info *schedulerframework.NodeInfo) *NodeInfo {
 				return NewNodeInfo(info.Node(), nil, testPodInfos(pods, false)...)
 			},
 			wantSchedNodeInfo: schedulerNodeInfo,
@@ -88,7 +85,7 @@ func TestNodeInfo(t *testing.T) {
 		},
 		{
 			testName: "wrapping via NewNodeInfo with DRA objects",
-			modFn: func(info fwk.NodeInfo) *NodeInfo {
+			modFn: func(info *schedulerframework.NodeInfo) *NodeInfo {
 				return NewNodeInfo(info.Node(), slices, testPodInfos(pods, true)...)
 			},
 			wantSchedNodeInfo:       schedulerNodeInfo,
@@ -97,10 +94,10 @@ func TestNodeInfo(t *testing.T) {
 		},
 		{
 			testName: "wrapping via NewTestNodeInfo",
-			modFn: func(info fwk.NodeInfo) *NodeInfo {
+			modFn: func(info *schedulerframework.NodeInfo) *NodeInfo {
 				var pods []*apiv1.Pod
-				for _, pod := range info.GetPods() {
-					pods = append(pods, pod.GetPod())
+				for _, pod := range info.Pods {
+					pods = append(pods, pod.Pod)
 				}
 				return NewTestNodeInfo(info.Node(), pods...)
 			},
@@ -108,34 +105,18 @@ func TestNodeInfo(t *testing.T) {
 			wantPods:          testPodInfos(pods, false),
 		},
 		{
-			testName: "wrapping via WrapSchedulerNodeInfo",
-			modFn: func(info fwk.NodeInfo) *NodeInfo {
-				return WrapSchedulerNodeInfo(info, nil, nil)
-			},
+			testName:          "wrapping via WrapSchedulerNodeInfo",
+			modFn:             WrapSchedulerNodeInfo,
 			wantSchedNodeInfo: schedulerNodeInfo,
 			wantPods:          testPodInfos(pods, false),
 		},
 		{
-			testName: "wrapping via WrapSchedulerNodeInfo with DRA objects",
-			modFn: func(info fwk.NodeInfo) *NodeInfo {
-				podInfos := testPodInfos(pods, true)
-				extraInfos := make(map[types.UID]PodExtraInfo)
-				for _, podInfo := range podInfos {
-					extraInfos[podInfo.Pod.UID] = podInfo.PodExtraInfo
-				}
-				return WrapSchedulerNodeInfo(schedulerNodeInfo, slices, extraInfos)
-			},
-			wantSchedNodeInfo:       schedulerNodeInfo,
-			wantLocalResourceSlices: slices,
-			wantPods:                testPodInfos(pods, true),
-		},
-		{
 			testName: "wrapping via SetNode+AddPod",
-			modFn: func(info fwk.NodeInfo) *NodeInfo {
+			modFn: func(info *schedulerframework.NodeInfo) *NodeInfo {
 				result := NewNodeInfo(nil, nil)
 				result.SetNode(info.Node())
-				for _, pod := range info.GetPods() {
-					result.AddPod(&PodInfo{Pod: pod.GetPod()})
+				for _, pod := range info.Pods {
+					result.AddPod(&PodInfo{Pod: pod.Pod})
 				}
 				return result
 			},
@@ -144,7 +125,7 @@ func TestNodeInfo(t *testing.T) {
 		},
 		{
 			testName: "wrapping via SetNode+AddPod with DRA objects",
-			modFn: func(info fwk.NodeInfo) *NodeInfo {
+			modFn: func(info *schedulerframework.NodeInfo) *NodeInfo {
 				result := NewNodeInfo(nil, nil)
 				result.LocalResourceSlices = slices
 				result.SetNode(info.Node())
@@ -159,7 +140,7 @@ func TestNodeInfo(t *testing.T) {
 		},
 		{
 			testName: "removing pods",
-			modFn: func(info fwk.NodeInfo) *NodeInfo {
+			modFn: func(info *schedulerframework.NodeInfo) *NodeInfo {
 				result := NewNodeInfo(info.Node(), slices, testPodInfos(pods, true)...)
 				for _, pod := range []*apiv1.Pod{pods[0], pods[2], pods[4]} {
 					if err := result.RemovePod(pod); err != nil {
@@ -172,29 +153,10 @@ func TestNodeInfo(t *testing.T) {
 			wantLocalResourceSlices: slices,
 			wantPods:                testPodInfos([]*apiv1.Pod{pods[1], pods[3], pods[5]}, true),
 		},
-		{
-			testName: "wrapping via WrapSchedulerNodeInfo and adding more pods",
-			modFn: func(info fwk.NodeInfo) *NodeInfo {
-				result := WrapSchedulerNodeInfo(info, nil, nil)
-				result.AddPod(testPodInfos([]*apiv1.Pod{extraPod}, false)[0])
-				return result
-			},
-			wantSchedNodeInfo: newSchedNodeInfo(node, append(pods, extraPod)),
-			wantPods:          testPodInfos(append(pods, extraPod), false),
-		},
-		{
-			testName: "wrapping via WrapSchedulerNodeInfo and adding more pods using DRA",
-			modFn: func(info fwk.NodeInfo) *NodeInfo {
-				result := WrapSchedulerNodeInfo(info, nil, nil)
-				result.AddPod(testPodInfos([]*apiv1.Pod{extraPod}, true)[0])
-				return result
-			},
-			wantSchedNodeInfo: newSchedNodeInfo(node, append(pods, extraPod)),
-			wantPods:          append(testPodInfos(pods, false), testPodInfos([]*apiv1.Pod{extraPod}, true)...),
-		},
 	} {
 		t.Run(tc.testName, func(t *testing.T) {
-			wrappedNodeInfo := tc.modFn(schedulerNodeInfo.Snapshot())
+			wrappedNodeInfo := tc.modFn(schedulerNodeInfo)
+
 			// Assert that the scheduler NodeInfo object is as expected.
 			nodeInfoCmpOpts := []cmp.Option{
 				// The Node is the only unexported field in this type, and we want to compare it.
@@ -203,10 +165,9 @@ func TestNodeInfo(t *testing.T) {
 				cmpopts.IgnoreFields(schedulerframework.NodeInfo{}, "Generation"),
 				// The pod order changes in a particular way whenever schedulerframework.RemovePod() is called. Instead of
 				// relying on that schedulerframework implementation detail in assertions, just ignore the order.
-				cmpopts.SortSlices(func(p1, p2 fwk.PodInfo) bool {
-					return p1.GetPod().Name < p2.GetPod().Name
+				cmpopts.SortSlices(func(p1, p2 *schedulerframework.PodInfo) bool {
+					return p1.Pod.Name < p2.Pod.Name
 				}),
-				cmpopts.IgnoreUnexported(schedulerframework.PodInfo{}),
 			}
 			if diff := cmp.Diff(tc.wantSchedNodeInfo, wrappedNodeInfo.ToScheduler(), nodeInfoCmpOpts...); diff != "" {
 				t.Errorf("ToScheduler() output differs from expected, diff (-want +got): %s", diff)
@@ -248,23 +209,20 @@ func TestNodeInfo(t *testing.T) {
 }
 
 func TestDeepCopyNodeInfo(t *testing.T) {
-	nodeName := "node"
-	node := test.BuildTestNode(nodeName, 1000, 1000)
+	node := test.BuildTestNode("node", 1000, 1000)
 	pods := []*PodInfo{
 		{Pod: test.BuildTestPod("p1", 80, 0, test.WithNodeName(node.Name))},
 		{
 			Pod: test.BuildTestPod("p2", 80, 0, test.WithNodeName(node.Name)),
-			PodExtraInfo: PodExtraInfo{
-				NeededResourceClaims: []*resourceapi.ResourceClaim{
-					{ObjectMeta: v1.ObjectMeta{Name: "claim1"}, Spec: resourceapi.ResourceClaimSpec{Devices: resourceapi.DeviceClaim{Requests: []resourceapi.DeviceRequest{{Name: "req1"}}}}},
-					{ObjectMeta: v1.ObjectMeta{Name: "claim2"}, Spec: resourceapi.ResourceClaimSpec{Devices: resourceapi.DeviceClaim{Requests: []resourceapi.DeviceRequest{{Name: "req2"}}}}},
-				},
+			NeededResourceClaims: []*resourceapi.ResourceClaim{
+				{ObjectMeta: v1.ObjectMeta{Name: "claim1"}, Spec: resourceapi.ResourceClaimSpec{Devices: resourceapi.DeviceClaim{Requests: []resourceapi.DeviceRequest{{Name: "req1"}}}}},
+				{ObjectMeta: v1.ObjectMeta{Name: "claim2"}, Spec: resourceapi.ResourceClaimSpec{Devices: resourceapi.DeviceClaim{Requests: []resourceapi.DeviceRequest{{Name: "req2"}}}}},
 			},
 		},
 	}
 	slices := []*resourceapi.ResourceSlice{
-		{ObjectMeta: v1.ObjectMeta{Name: "slice1"}, Spec: resourceapi.ResourceSliceSpec{NodeName: &nodeName}},
-		{ObjectMeta: v1.ObjectMeta{Name: "slice2"}, Spec: resourceapi.ResourceSliceSpec{NodeName: &nodeName}},
+		{ObjectMeta: v1.ObjectMeta{Name: "slice1"}, Spec: resourceapi.ResourceSliceSpec{NodeName: "node"}},
+		{ObjectMeta: v1.ObjectMeta{Name: "slice2"}, Spec: resourceapi.ResourceSliceSpec{NodeName: "node"}},
 	}
 
 	for _, tc := range []struct {
@@ -296,11 +254,10 @@ func TestDeepCopyNodeInfo(t *testing.T) {
 			// Verify that the contents are identical after copying.
 			nodeInfoCopy := tc.nodeInfo.DeepCopy()
 			if diff := cmp.Diff(tc.nodeInfo, nodeInfoCopy,
-				cmp.AllowUnexported(schedulerframework.NodeInfo{}, NodeInfo{}),
+				cmp.AllowUnexported(schedulerframework.NodeInfo{}, NodeInfo{}, PodInfo{}, podExtraInfo{}),
 				// We don't care about this field staying the same, and it differs because it's a global counter bumped
 				// on every AddPod.
 				cmpopts.IgnoreFields(schedulerframework.NodeInfo{}, "Generation"),
-				cmpopts.IgnoreUnexported(schedulerframework.PodInfo{}),
 			); diff != "" {
 				t.Errorf("nodeInfo differs after DeepCopyNodeInfo, diff (-want +got): %s", diff)
 			}
@@ -336,85 +293,30 @@ func TestDeepCopyNodeInfo(t *testing.T) {
 	}
 }
 
-func TestNodeInfoResourceClaims(t *testing.T) {
-	node := test.BuildTestNode("node", 1000, 1000)
-	pods := []*apiv1.Pod{
-		test.BuildTestPod("pod-0", 100, 16),
-		test.BuildTestPod("pod-1", 100, 16),
-		test.BuildTestPod("pod-2", 100, 16),
-	}
-
-	for _, tc := range []struct {
-		testName   string
-		nodeInfo   *NodeInfo
-		wantClaims []*resourceapi.ResourceClaim
-	}{
-		{
-			testName:   "no pods",
-			nodeInfo:   NewNodeInfo(node, nil),
-			wantClaims: nil,
-		},
-		{
-			testName:   "pods but no claims",
-			nodeInfo:   NewNodeInfo(node, nil, testPodInfos(pods, false)...),
-			wantClaims: nil,
-		},
-		{
-			testName: "pods with claims, shared claims are not repeated",
-			nodeInfo: NewNodeInfo(node, nil, testPodInfos(pods, true)...),
-			wantClaims: []*resourceapi.ResourceClaim{
-				testClaim("pod-0-claim-0"),
-				testClaim("pod-0-claim-1"),
-				testClaim("pod-0-claim-2"),
-				testClaim("pod-1-claim-0"),
-				testClaim("pod-1-claim-1"),
-				testClaim("pod-1-claim-2"),
-				testClaim("pod-2-claim-0"),
-				testClaim("pod-2-claim-1"),
-				testClaim("pod-2-claim-2"),
-				testClaim("shared-claim-0"),
-				testClaim("shared-claim-1"),
-				testClaim("shared-claim-2"),
-			},
-		},
-	} {
-		t.Run(tc.testName, func(t *testing.T) {
-			claims := tc.nodeInfo.ResourceClaims()
-			ignoreClaimOrder := cmpopts.SortSlices(func(c1, c2 *resourceapi.ResourceClaim) bool { return c1.Name < c2.Name })
-			if diff := cmp.Diff(tc.wantClaims, claims, ignoreClaimOrder, cmpopts.EquateEmpty()); diff != "" {
-				t.Errorf("NodeInfo.ResourceClaims(): unexpected output (-want +got): %s", diff)
-			}
-		})
-	}
-}
-
 func testPodInfos(pods []*apiv1.Pod, addClaims bool) []*PodInfo {
 	var result []*PodInfo
 	for _, pod := range pods {
 		podInfo := &PodInfo{Pod: pod}
 		if addClaims {
 			for i := range 3 {
-				podInfo.NeededResourceClaims = append(podInfo.NeededResourceClaims, testClaim(fmt.Sprintf("%s-claim-%d", pod.Name, i)))
-				podInfo.NeededResourceClaims = append(podInfo.NeededResourceClaims, testClaim(fmt.Sprintf("shared-claim-%d", i)))
+				podInfo.NeededResourceClaims = append(podInfo.NeededResourceClaims, &resourceapi.ResourceClaim{
+					ObjectMeta: v1.ObjectMeta{
+						Name: fmt.Sprintf("%s-claim-%d", pod.Name, i),
+					},
+					Spec: resourceapi.ResourceClaimSpec{
+						Devices: resourceapi.DeviceClaim{
+							Requests: []resourceapi.DeviceRequest{
+								{Name: "request-0"},
+								{Name: "request-1"},
+							},
+						},
+					},
+				})
 			}
 		}
 		result = append(result, podInfo)
 	}
 	return result
-}
-
-func testClaim(claimName string) *resourceapi.ResourceClaim {
-	return &resourceapi.ResourceClaim{
-		ObjectMeta: v1.ObjectMeta{Name: claimName, UID: types.UID(claimName)},
-		Spec: resourceapi.ResourceClaimSpec{
-			Devices: resourceapi.DeviceClaim{
-				Requests: []resourceapi.DeviceRequest{
-					{Name: "request-0"},
-					{Name: "request-1"},
-				},
-			},
-		},
-	}
 }
 
 func newSchedNodeInfo(node *apiv1.Node, pods []*apiv1.Pod) *schedulerframework.NodeInfo {

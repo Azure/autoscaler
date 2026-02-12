@@ -33,6 +33,7 @@ import (
 	. "k8s.io/autoscaler/cluster-autoscaler/core/test"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupconfig"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/nodeinfosprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/provreq"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
 	processorstest "k8s.io/autoscaler/cluster-autoscaler/processors/test"
@@ -41,7 +42,6 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest/pods"
 	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest/provreqclient"
 	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest/provreqwrapper"
-	"k8s.io/autoscaler/cluster-autoscaler/resourcequotas"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
@@ -459,7 +459,7 @@ func TestScaleUp(t *testing.T) {
 }
 
 func setupTest(t *testing.T, client *provreqclient.ProvisioningRequestClient, nodes []*apiv1.Node, onScaleUpFunc func(string, int) error, autoprovisioning bool, batchProcessing bool, maxBatchSize int, batchTimebox time.Duration) (*provReqOrchestrator, map[string]*framework.NodeInfo) {
-	provider := testprovider.NewTestCloudProviderBuilder().WithOnScaleUp(onScaleUpFunc).Build()
+	provider := testprovider.NewTestCloudProvider(onScaleUpFunc, nil)
 	clock := clocktesting.NewFakePassiveClock(time.Now())
 	now := clock.Now()
 	if autoprovisioning {
@@ -471,7 +471,7 @@ func setupTest(t *testing.T, client *provreqclient.ProvisioningRequestClient, no
 			"large-machine": nodeInfoTemplate,
 		}
 		onNodeGroupCreateFunc := func(name string) error { return nil }
-		provider = testprovider.NewTestCloudProviderBuilder().WithOnScaleUp(onScaleUpFunc).WithOnNodeGroupCreate(onNodeGroupCreateFunc).WithMachineTypes(machineTypes).WithMachineTemplates(machineTemplates).Build()
+		provider = testprovider.NewTestAutoprovisioningCloudProvider(onScaleUpFunc, nil, onNodeGroupCreateFunc, nil, machineTypes, machineTemplates)
 	}
 
 	provider.AddNodeGroup("test-cpu", 50, 150, 100)
@@ -482,37 +482,33 @@ func setupTest(t *testing.T, client *provreqclient.ProvisioningRequestClient, no
 	podLister := kube_util.NewTestPodLister(nil)
 	listers := kube_util.NewListerRegistry(nil, nil, podLister, nil, nil, nil, nil, nil, nil)
 
-	options := config.AutoscalingOptions{
-		MaxNodeGroupBinpackingDuration: 1 * time.Second,
-	}
+	options := config.AutoscalingOptions{}
 	if batchProcessing {
 		options.CheckCapacityBatchProcessing = true
 		options.CheckCapacityProvisioningRequestMaxBatchSize = maxBatchSize
 		options.CheckCapacityProvisioningRequestBatchTimebox = batchTimebox
 	}
 
-	processors, templateNodeInfoRegistry := processorstest.NewTestProcessors(options)
-	autoscalingCtx, err := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, listers, provider, nil, nil, templateNodeInfoRegistry)
+	autoscalingContext, err := NewScaleTestAutoscalingContext(options, &fake.Clientset{}, listers, provider, nil, nil)
 	assert.NoError(t, err)
 
-	clustersnapshot.InitializeClusterSnapshotOrDie(t, autoscalingCtx.ClusterSnapshot, nodes, nil)
+	clustersnapshot.InitializeClusterSnapshotOrDie(t, autoscalingContext.ClusterSnapshot, nodes, nil)
+	processors := processorstest.NewTestProcessors(&autoscalingContext)
 	if autoprovisioning {
 		processors.NodeGroupListProcessor = &MockAutoprovisioningNodeGroupListProcessor{T: t}
 		processors.NodeGroupManager = &MockAutoprovisioningNodeGroupManager{T: t, ExtraGroups: 2}
 	}
-	err = autoscalingCtx.TemplateNodeInfoRegistry.Recompute(&autoscalingCtx, nodes, []*appsv1.DaemonSet{}, taints.TaintConfig{}, now)
+	nodeInfos, err := nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil, false).Process(&autoscalingContext, nodes, []*appsv1.DaemonSet{}, taints.TaintConfig{}, now)
 	assert.NoError(t, err)
-	nodeInfos := autoscalingCtx.TemplateNodeInfoRegistry.GetNodeInfos()
 
 	estimatorBuilder, _ := estimator.NewEstimatorBuilder(
 		estimator.BinpackingEstimatorName,
 		estimator.NewThresholdBasedEstimationLimiter(nil),
 		estimator.NewDecreasingPodOrderer(),
 		nil,
-		false,
 	)
 
-	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, autoscalingCtx.LogRecorder, NewBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(autoscalingCtx.NodeGroupDefaults), processors.AsyncNodeGroupStateChecker)
+	clusterState := clusterstate.NewClusterStateRegistry(provider, clusterstate.ClusterStateRegistryConfig{}, autoscalingContext.LogRecorder, NewBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(autoscalingContext.NodeGroupDefaults), processors.AsyncNodeGroupStateChecker)
 	clusterState.UpdateNodes(nodes, nodeInfos, now)
 
 	var injector *provreq.ProvisioningRequestPodsInjector
@@ -520,15 +516,12 @@ func setupTest(t *testing.T, client *provreqclient.ProvisioningRequestClient, no
 		injector = provreq.NewFakePodsInjector(client, clocktesting.NewFakePassiveClock(now))
 	}
 
-	quotasTrackerFactory := resourcequotas.NewTrackerFactory(resourcequotas.TrackerOptions{
-		QuotaProvider:            resourcequotas.NewFakeProvider(nil),
-		CustomResourcesProcessor: processors.CustomResourcesProcessor,
-	})
 	orchestrator := &provReqOrchestrator{
 		client:              client,
 		provisioningClasses: []ProvisioningClass{checkcapacity.New(client, injector), besteffortatomic.New(client)},
 	}
-	orchestrator.Initialize(&autoscalingCtx, processors, clusterState, estimatorBuilder, taints.TaintConfig{}, quotasTrackerFactory)
+
+	orchestrator.Initialize(&autoscalingContext, processors, clusterState, estimatorBuilder, taints.TaintConfig{})
 	return orchestrator, nodeInfos
 }
 

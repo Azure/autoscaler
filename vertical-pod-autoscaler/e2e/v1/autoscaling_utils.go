@@ -34,7 +34,6 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2edebug "k8s.io/kubernetes/test/e2e/framework/debug"
-	e2eendpointslice "k8s.io/kubernetes/test/e2e/framework/endpointslice"
 	e2ekubectl "k8s.io/kubernetes/test/e2e/framework/kubectl"
 	e2erc "k8s.io/kubernetes/test/e2e/framework/rc"
 	"k8s.io/kubernetes/test/e2e/framework/resource"
@@ -55,6 +54,11 @@ const (
 	port                            = 80
 	targetPort                      = 8080
 	timeoutRC                       = 120 * time.Second
+	startServiceTimeout             = time.Minute
+	startServiceInterval            = 5 * time.Second
+	rcIsNil                         = "ERROR: replicationController = nil"
+	deploymentIsNil                 = "ERROR: deployment = nil"
+	rsIsNil                         = "ERROR: replicaset = nil"
 	invalidKind                     = "ERROR: invalid workload kind for resource consumer"
 	customMetricName                = "QPS"
 	serviceInitializationTimeout    = 2 * time.Minute
@@ -357,7 +361,7 @@ func runServiceAndWorkloadForResourceConsumer(c clientset.Interface, ns, name st
 		Namespace:   ns,
 		Timeout:     timeoutRC,
 		Replicas:    replicas,
-		CPURequest:  cpuRequestMillis,
+		CpuRequest:  cpuRequestMillis,
 		MemRequest:  memRequestMb * 1024 * 1024, // MemRequest is in bytes
 		Annotations: podAnnotations,
 	}
@@ -416,8 +420,8 @@ func runServiceAndWorkloadForResourceConsumer(c clientset.Interface, ns, name st
 	framework.ExpectNoError(e2erc.RunRC(context.TODO(), controllerRcConfig))
 
 	// Wait for endpoints to propagate for the controller service.
-	framework.ExpectNoError(e2eendpointslice.WaitForEndpointCount(
-		context.TODO(), c, ns, controllerName, 1))
+	framework.ExpectNoError(framework.WaitForServiceEndpointsNum(
+		context.TODO(), c, ns, controllerName, 1, startServiceInterval, startServiceTimeout))
 }
 
 // runReplicaSet launches (and verifies correctness) of a replicaset.

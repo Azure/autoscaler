@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"sigs.k8s.io/yaml"
+	"gopkg.in/yaml.v2"
 
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 

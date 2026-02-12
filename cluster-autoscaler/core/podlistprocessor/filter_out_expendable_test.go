@@ -24,7 +24,7 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot/testsnapshot"
 	kube_util "k8s.io/autoscaler/cluster-autoscaler/utils/kubernetes"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/test"
@@ -110,15 +110,15 @@ func TestFilterOutExpendable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			processor := NewFilterOutExpendablePodListProcessor()
 			snapshot := testsnapshot.NewTestSnapshotOrDie(t)
-			err := snapshot.SetClusterState(tc.nodes, nil, nil, nil)
+			err := snapshot.SetClusterState(tc.nodes, nil)
 			assert.NoError(t, err)
 
-			pods, err := processor.Process(&ca_context.AutoscalingContext{
+			pods, err := processor.Process(&context.AutoscalingContext{
 				ClusterSnapshot: snapshot,
 				AutoscalingOptions: config.AutoscalingOptions{
 					ExpendablePodsPriorityCutoff: tc.priorityCutoff,
 				},
-				AutoscalingKubeClients: ca_context.AutoscalingKubeClients{
+				AutoscalingKubeClients: context.AutoscalingKubeClients{
 					ListerRegistry: newMockListerRegistry(tc.nodes),
 				},
 			}, tc.pods)

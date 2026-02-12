@@ -20,7 +20,6 @@ import (
 	"time"
 
 	apiv1 "k8s.io/api/core/v1"
-	"k8s.io/autoscaler/cluster-autoscaler/core/scaledown"
 )
 
 // PreviousCandidates is a struct that store scale down candidates from previous loop.
@@ -34,10 +33,10 @@ func NewPreviousCandidates() *PreviousCandidates {
 }
 
 // UpdateScaleDownCandidates updates scale down candidates.
-func (p *PreviousCandidates) UpdateScaleDownCandidates(nodes []*scaledown.UnneededNode, now time.Time) {
+func (p *PreviousCandidates) UpdateScaleDownCandidates(nodes []*apiv1.Node, now time.Time) {
 	result := make(map[string]bool)
 	for _, node := range nodes {
-		result[node.Node.Name] = true
+		result[node.Name] = true
 	}
 	p.candidates = result
 }
@@ -49,9 +48,6 @@ func (p *PreviousCandidates) ScaleDownEarlierThan(node1, node2 *apiv1.Node) bool
 	}
 	return false
 }
-
-// ResetState resets internal state before every sorting.
-func (p *PreviousCandidates) ResetState() {}
 
 func (p *PreviousCandidates) isPreviousCandidate(node *apiv1.Node) bool {
 	return p.candidates[node.Name]

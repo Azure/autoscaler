@@ -19,9 +19,8 @@ package mocktarget
 import (
 	"context"
 
-	"go.uber.org/mock/gomock"
+	"github.com/golang/mock/gomock"
 	"k8s.io/apimachinery/pkg/labels"
-
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 )
 
@@ -56,6 +55,6 @@ func (_m *MockVpaTargetSelectorFetcher) Fetch(_ context.Context, vpa *vpa_types.
 	return ret0, ret1
 }
 
-func (_mr *_MockVpaTargetSelectorFetcherRecorder) Fetch(arg0 any) *gomock.Call {
+func (_mr *_MockVpaTargetSelectorFetcherRecorder) Fetch(arg0 interface{}) *gomock.Call {
 	return _mr.mock.ctrl.RecordCall(_mr.mock, "Fetch", arg0)
 }

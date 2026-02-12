@@ -17,10 +17,8 @@ limitations under the License.
 package scaledowncandidates
 
 import (
-	"fmt"
-
 	apiv1 "k8s.io/api/core/v1"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodes"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 )
@@ -43,10 +41,10 @@ func (p *combinedScaleDownCandidatesProcessor) Register(np nodes.ScaleDownNodePr
 
 // GetPodDestinationCandidates returns nodes that potentially could act as destinations for pods
 // that would become unscheduled after a scale down.
-func (p *combinedScaleDownCandidatesProcessor) GetPodDestinationCandidates(autoscalingCtx *ca_context.AutoscalingContext, nodes []*apiv1.Node) ([]*apiv1.Node, errors.AutoscalerError) {
+func (p *combinedScaleDownCandidatesProcessor) GetPodDestinationCandidates(ctx *context.AutoscalingContext, nodes []*apiv1.Node) ([]*apiv1.Node, errors.AutoscalerError) {
 	var err errors.AutoscalerError
 	for _, processor := range p.processors {
-		nodes, err = processor.GetPodDestinationCandidates(autoscalingCtx, nodes)
+		nodes, err = processor.GetPodDestinationCandidates(ctx, nodes)
 		if err != nil {
 			return nil, err
 		}
@@ -55,10 +53,10 @@ func (p *combinedScaleDownCandidatesProcessor) GetPodDestinationCandidates(autos
 }
 
 // GetScaleDownCandidates returns nodes that potentially could be scaled down.
-func (p *combinedScaleDownCandidatesProcessor) GetScaleDownCandidates(autoscalingCtx *ca_context.AutoscalingContext, nodes []*apiv1.Node) ([]*apiv1.Node, errors.AutoscalerError) {
+func (p *combinedScaleDownCandidatesProcessor) GetScaleDownCandidates(ctx *context.AutoscalingContext, nodes []*apiv1.Node) ([]*apiv1.Node, errors.AutoscalerError) {
 	var err errors.AutoscalerError
 	for _, processor := range p.processors {
-		nodes, err = processor.GetScaleDownCandidates(autoscalingCtx, nodes)
+		nodes, err = processor.GetScaleDownCandidates(ctx, nodes)
 		if err != nil {
 			return nil, err
 		}
@@ -71,17 +69,4 @@ func (p *combinedScaleDownCandidatesProcessor) CleanUp() {
 	for _, processor := range p.processors {
 		processor.CleanUp()
 	}
-}
-
-// RegisterCombinedScaleDownCandidateProcessor registers a new ScaleDownNodeProcessor with
-// a CombinedScaleDownCandidatesProcessor. This function will return an error if the
-// processor receiving the registration is not a CombinedScaleDownCandidatesProcessor.
-func RegisterCombinedScaleDownCandidateProcessor(combinedProcessor, processorToAdd nodes.ScaleDownNodeProcessor) error {
-	combinedProcessorConcrete, ok := combinedProcessor.(*combinedScaleDownCandidatesProcessor)
-	if !ok {
-		return fmt.Errorf("wrong concrete ScaleDownNodeProcessor type: want *scaledowncandidates.CombinedScaleDownCandidatesProcessor, got %T", combinedProcessor)
-	}
-	combinedProcessorConcrete.Register(processorToAdd)
-
-	return nil
 }

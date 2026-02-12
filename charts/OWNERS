@@ -1,0 +1,8 @@
+approvers:
+- gjtempleton
+reviewers:
+- gjtempleton
+- jackfrancis
+
+labels:
+- area/helm-charts

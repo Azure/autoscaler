@@ -108,7 +108,6 @@ rules:
     - storageclasses
     - csidrivers
     - csistoragecapacities
-    - volumeattachments
     verbs:
     - get
     - list
@@ -153,16 +152,6 @@ rules:
     - create
     - get
     - update
-  - apiGroups:
-    - resource.k8s.io
-    resources:
-      - resourceslices
-      - deviceclasses
-      - resourceclaims
-    verbs:
-      - watch
-      - list
-      - get
 ---
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1

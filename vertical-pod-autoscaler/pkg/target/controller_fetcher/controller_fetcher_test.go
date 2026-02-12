@@ -18,12 +18,12 @@ package controllerfetcher
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -85,6 +85,7 @@ func simpleControllerFetcher() *controllerFetcher {
 
 	// resource that can scale
 	scaleNamespacer.AddReactor("get", "iCanScale", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+
 		ret = &autoscalingv1.Scale{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "Scaler",
@@ -312,7 +313,7 @@ func TestControllerFetcher(t *testing.T) {
 				},
 			}},
 			expectedKey:   nil,
-			expectedError: errors.New("cycle detected in ownership chain"),
+			expectedError: fmt.Errorf("Cycle detected in ownership chain"),
 		},
 		{
 			name: "deployment, parent with no scale subresource",
@@ -389,7 +390,7 @@ func TestControllerFetcher(t *testing.T) {
 				},
 			}},
 			expectedKey:   nil,
-			expectedError: fmt.Errorf("unhandled targetRef v1 / Node / node, last error %w", ErrNodeInvalidOwner),
+			expectedError: fmt.Errorf("Unhandled targetRef v1 / Node / node, last error node is not a valid owner"),
 		},
 		{
 			name: "custom resource with no scale subresource",

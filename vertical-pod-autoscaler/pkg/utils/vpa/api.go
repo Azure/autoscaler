@@ -19,7 +19,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -47,16 +46,16 @@ type VpaWithSelector struct {
 }
 
 type patchRecord struct {
-	Op    string `json:"op,inline"`
-	Path  string `json:"path,inline"`
-	Value any    `json:"value"`
+	Op    string      `json:"op,inline"`
+	Path  string      `json:"path,inline"`
+	Value interface{} `json:"value"`
 }
 
 func patchVpaStatus(vpaClient vpa_api.VerticalPodAutoscalerInterface, vpaName string, patches []patchRecord) (result *vpa_types.VerticalPodAutoscaler, err error) {
 	bytes, err := json.Marshal(patches)
 	if err != nil {
 		klog.ErrorS(err, "Cannot marshal VPA status patches", "patches", patches)
-		return nil, err
+		return
 	}
 
 	return vpaClient.Patch(context.TODO(), vpaName, types.JSONPatchType, bytes, meta.PatchOptions{}, "status")
@@ -82,59 +81,19 @@ func UpdateVpaStatusIfNeeded(vpaClient vpa_api.VerticalPodAutoscalerInterface, v
 // The method blocks until vpaLister is initially populated.
 func NewVpasLister(vpaClient *vpa_clientset.Clientset, stopChannel <-chan struct{}, namespace string) vpa_lister.VerticalPodAutoscalerLister {
 	vpaListWatch := cache.NewListWatchFromClient(vpaClient.AutoscalingV1().RESTClient(), "verticalpodautoscalers", namespace, fields.Everything())
-	informerOptions := cache.InformerOptions{
-		ObjectType:    &vpa_types.VerticalPodAutoscaler{},
-		ListerWatcher: vpaListWatch,
-		Handler:       &cache.ResourceEventHandlerFuncs{},
-		ResyncPeriod:  1 * time.Hour,
-		Indexers:      cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc},
-	}
-
-	store, controller := cache.NewInformerWithOptions(informerOptions)
-	indexer, ok := store.(cache.Indexer)
-	if !ok {
-		klog.ErrorS(nil, "Expected Indexer, but got a Store that does not implement Indexer")
-		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
-	}
+	indexer, controller := cache.NewIndexerInformer(vpaListWatch,
+		&vpa_types.VerticalPodAutoscaler{},
+		1*time.Hour,
+		&cache.ResourceEventHandlerFuncs{},
+		cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 	vpaLister := vpa_lister.NewVerticalPodAutoscalerLister(indexer)
 	go controller.Run(stopChannel)
-	if !cache.WaitForCacheSync(stopChannel, controller.HasSynced) {
+	if !cache.WaitForCacheSync(make(chan struct{}), controller.HasSynced) {
 		klog.ErrorS(nil, "Failed to sync VPA cache during initialization")
-		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	} else {
 		klog.InfoS("Initial VPA synced successfully")
 	}
 	return vpaLister
-}
-
-// NewVpaCheckpointLister returns VerticalPodAutoscalerCheckpointLister configured to fetch all VPACheckpoint objects from namespace,
-// set namespace to k8sapiv1.NamespaceAll to select all namespaces.
-// The method blocks until vpaCheckpointLister is initially populated.
-func NewVpaCheckpointLister(vpaClient *vpa_clientset.Clientset, stopChannel <-chan struct{}, namespace string) vpa_lister.VerticalPodAutoscalerCheckpointLister {
-	vpaListWatch := cache.NewListWatchFromClient(vpaClient.AutoscalingV1().RESTClient(), "verticalpodautoscalercheckpoints", namespace, fields.Everything())
-	informerOptions := cache.InformerOptions{
-		ObjectType:    &vpa_types.VerticalPodAutoscalerCheckpoint{},
-		ListerWatcher: vpaListWatch,
-		Handler:       &cache.ResourceEventHandlerFuncs{},
-		ResyncPeriod:  1 * time.Hour,
-		Indexers:      cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc},
-	}
-
-	store, controller := cache.NewInformerWithOptions(informerOptions)
-	indexer, ok := store.(cache.Indexer)
-	if !ok {
-		klog.ErrorS(nil, "Expected Indexer, but got a Store that does not implement Indexer")
-		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
-	}
-	vpaCheckpointLister := vpa_lister.NewVerticalPodAutoscalerCheckpointLister(indexer)
-	go controller.Run(stopChannel)
-	if !cache.WaitForCacheSync(stopChannel, controller.HasSynced) {
-		klog.ErrorS(nil, "Failed to sync VPA checkpoint cache during initialization")
-		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
-	} else {
-		klog.InfoS("Initial VPA checkpoint synced successfully")
-	}
-	return vpaCheckpointLister
 }
 
 // PodMatchesVPA returns true iff the vpaWithSelector matches the Pod.
@@ -169,6 +128,7 @@ func Stronger(a, b *vpa_types.VerticalPodAutoscaler) bool {
 
 // GetControllingVPAForPod chooses the earliest created VPA from the input list that matches the given Pod.
 func GetControllingVPAForPod(ctx context.Context, pod *core.Pod, vpas []*VpaWithSelector, ctrlFetcher controllerfetcher.ControllerFetcher) *VpaWithSelector {
+
 	parentController, err := FindParentControllerForPod(ctx, pod, ctrlFetcher)
 	if err != nil {
 		klog.ErrorS(err, "Failed to get parent controller for pod", "pod", klog.KObj(pod))
@@ -220,23 +180,14 @@ func FindParentControllerForPod(ctx context.Context, pod *core.Pod, ctrlFetcher 
 		},
 		ApiVersion: ownerRefrence.APIVersion,
 	}
-	controller, err := ctrlFetcher.FindTopMostWellKnownOrScalable(ctx, k)
-
-	// ignore NodeInvalidOwner error when looking for the parent controller for a Pod. While this _is_ an error when
-	// validating the targetRef of a VPA, this is a valid scenario when iterating over all Pods and finding their owner.
-	// vpa updater and admission-controller don't care about these Pods, because they cannot have a valid VPA point to
-	// them, so it is safe to ignore this here.
-	if err != nil && !errors.Is(err, controllerfetcher.ErrNodeInvalidOwner) {
-		return nil, err
-	}
-	return controller, nil
+	return ctrlFetcher.FindTopMostWellKnownOrScalable(ctx, k)
 }
 
 // GetUpdateMode returns the updatePolicy.updateMode for a given VPA.
-// If the mode is not specified it returns the default (UpdateModeRecreate).
+// If the mode is not specified it returns the default (UpdateModeAuto).
 func GetUpdateMode(vpa *vpa_types.VerticalPodAutoscaler) vpa_types.UpdateMode {
 	if vpa.Spec.UpdatePolicy == nil || vpa.Spec.UpdatePolicy.UpdateMode == nil || *vpa.Spec.UpdatePolicy.UpdateMode == "" {
-		return vpa_types.UpdateModeRecreate
+		return vpa_types.UpdateModeAuto
 	}
 	return *vpa.Spec.UpdatePolicy.UpdateMode
 }
@@ -279,14 +230,14 @@ func CreateOrUpdateVpaCheckpoint(vpaCheckpointClient vpa_api.VerticalPodAutoscal
 	})
 	bytes, err := json.Marshal(patches)
 	if err != nil {
-		return fmt.Errorf("cannot marshal VPA checkpoint status patches %+v. Reason: %+v", patches, err)
+		return fmt.Errorf("Cannot marshal VPA checkpoint status patches %+v. Reason: %+v", patches, err)
 	}
-	_, err = vpaCheckpointClient.Patch(context.TODO(), vpaCheckpoint.Name, types.JSONPatchType, bytes, meta.PatchOptions{})
-	if err != nil && strings.Contains(err.Error(), fmt.Sprintf("\"%s\" not found", vpaCheckpoint.Name)) {
+	_, err = vpaCheckpointClient.Patch(context.TODO(), vpaCheckpoint.ObjectMeta.Name, types.JSONPatchType, bytes, meta.PatchOptions{})
+	if err != nil && strings.Contains(err.Error(), fmt.Sprintf("\"%s\" not found", vpaCheckpoint.ObjectMeta.Name)) {
 		_, err = vpaCheckpointClient.Create(context.TODO(), vpaCheckpoint, meta.CreateOptions{})
 	}
 	if err != nil {
-		return fmt.Errorf("cannot save checkpoint for vpa %s/%s container %s. Reason: %+v", vpaCheckpoint.Namespace, vpaCheckpoint.Name, vpaCheckpoint.Spec.ContainerName, err)
+		return fmt.Errorf("Cannot save checkpoint for vpa %s/%s container %s. Reason: %+v", vpaCheckpoint.Namespace, vpaCheckpoint.Name, vpaCheckpoint.Spec.ContainerName, err)
 	}
 	return nil
 }

@@ -25,9 +25,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/durationpb"
-
 	apiv1 "k8s.io/api/core/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/externalgrpc/protos"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
@@ -125,11 +124,9 @@ func TestCloudProvider_TemplateNodeInfo(t *testing.T) {
 	// test correct call
 	apiv1Node1 := &apiv1.Node{}
 	apiv1Node1.Name = "node1"
-	apiv1Node1Bytes, _ := apiv1Node1.Marshal()
 
 	apiv1Node2 := &apiv1.Node{}
 	apiv1Node2.Name = "node2"
-	apiv1Node2Bytes, _ := apiv1Node2.Marshal()
 
 	m.On(
 		"NodeGroupTemplateNodeInfo", mock.Anything, mock.MatchedBy(func(req *protos.NodeGroupTemplateNodeInfoRequest) bool {
@@ -137,7 +134,7 @@ func TestCloudProvider_TemplateNodeInfo(t *testing.T) {
 		}),
 	).Return(
 		&protos.NodeGroupTemplateNodeInfoResponse{
-			NodeBytes: apiv1Node1Bytes,
+			NodeInfo: apiv1Node1,
 		}, nil,
 	).Once()
 
@@ -147,7 +144,7 @@ func TestCloudProvider_TemplateNodeInfo(t *testing.T) {
 		}),
 	).Return(
 		&protos.NodeGroupTemplateNodeInfoResponse{
-			NodeBytes: apiv1Node2Bytes,
+			NodeInfo: apiv1Node2,
 		}, nil,
 	).Once()
 
@@ -184,7 +181,7 @@ func TestCloudProvider_TemplateNodeInfo(t *testing.T) {
 		}),
 	).Return(
 		&protos.NodeGroupTemplateNodeInfoResponse{
-			NodeBytes: nil,
+			NodeInfo: nil,
 		}, nil,
 	).Once()
 
@@ -205,7 +202,7 @@ func TestCloudProvider_TemplateNodeInfo(t *testing.T) {
 		}),
 	).Return(
 		&protos.NodeGroupTemplateNodeInfoResponse{
-			NodeBytes: nil,
+			NodeInfo: nil,
 		},
 		fmt.Errorf("mock error"),
 	).Once()
@@ -226,7 +223,7 @@ func TestCloudProvider_TemplateNodeInfo(t *testing.T) {
 		}),
 	).Return(
 		&protos.NodeGroupTemplateNodeInfoResponse{
-			NodeBytes: nil,
+			NodeInfo: nil,
 		},
 		status.Error(codes.Unimplemented, "mock error"),
 	).Once()
@@ -247,7 +244,7 @@ func TestCloudProvider_GetOptions(t *testing.T) {
 	client, m, teardown := setupTest(t)
 	defer teardown()
 
-	// test correct call, NodeGroupAutoscalingOptionsResponse will override default options
+	// test correct call
 	m.On(
 		"NodeGroupGetOptions", mock.Anything, mock.MatchedBy(func(req *protos.NodeGroupAutoscalingOptionsRequest) bool {
 			return req.Id == "nodeGroup1"
@@ -257,11 +254,9 @@ func TestCloudProvider_GetOptions(t *testing.T) {
 			NodeGroupAutoscalingOptions: &protos.NodeGroupAutoscalingOptions{
 				ScaleDownUtilizationThreshold:    0.6,
 				ScaleDownGpuUtilizationThreshold: 0.7,
-				ScaleDownUnneededDuration:        durationpb.New(time.Minute),
-				ScaleDownUnreadyDuration:         durationpb.New(time.Hour),
-				MaxNodeProvisionDuration:         durationpb.New(time.Minute),
-				ZeroOrMaxNodeScaling:             true,
-				IgnoreDaemonSetsUtilization:      true,
+				ScaleDownUnneededTime:            &v1.Duration{Duration: time.Minute},
+				ScaleDownUnreadyTime:             &v1.Duration{Duration: time.Hour},
+				MaxNodeProvisionTime:             &v1.Duration{Duration: time.Minute},
 			},
 		},
 		nil,
@@ -272,15 +267,12 @@ func TestCloudProvider_GetOptions(t *testing.T) {
 		client:      client,
 		grpcTimeout: defaultGRPCTimeout,
 	}
-
 	defaultsOpts := config.NodeGroupAutoscalingOptions{
 		ScaleDownUtilizationThreshold:    0.6,
 		ScaleDownGpuUtilizationThreshold: 0.7,
 		ScaleDownUnneededTime:            time.Minute,
 		ScaleDownUnreadyTime:             time.Hour,
 		MaxNodeProvisionTime:             time.Minute,
-		ZeroOrMaxNodeScaling:             false,
-		IgnoreDaemonSetsUtilization:      false,
 	}
 
 	opts, err := ng1.GetOptions(defaultsOpts)
@@ -290,8 +282,6 @@ func TestCloudProvider_GetOptions(t *testing.T) {
 	assert.Equal(t, time.Minute, opts.ScaleDownUnneededTime)
 	assert.Equal(t, time.Hour, opts.ScaleDownUnreadyTime)
 	assert.Equal(t, time.Minute, opts.MaxNodeProvisionTime)
-	assert.Equal(t, true, opts.ZeroOrMaxNodeScaling)
-	assert.Equal(t, true, opts.IgnoreDaemonSetsUtilization)
 
 	// test grpc error
 	m.On(
@@ -299,11 +289,9 @@ func TestCloudProvider_GetOptions(t *testing.T) {
 			return req.Id == "nodeGroup2"
 		}),
 	).Return(
-		&protos.NodeGroupAutoscalingOptionsResponse{
-			NodeGroupAutoscalingOptions: &protos.NodeGroupAutoscalingOptions{},
-		},
+		&protos.NodeGroupAutoscalingOptionsResponse{},
 		fmt.Errorf("mock error"),
-	).Once()
+	)
 
 	ng2 := NodeGroup{
 		id:          "nodeGroup2",
@@ -354,40 +342,6 @@ func TestCloudProvider_GetOptions(t *testing.T) {
 	_, err = ng4.GetOptions(defaultsOpts)
 	assert.Error(t, err)
 	assert.Equal(t, cloudprovider.ErrNotImplemented, err)
-
-	// test with default options
-	m.On(
-		"NodeGroupGetOptions", mock.Anything, mock.MatchedBy(func(req *protos.NodeGroupAutoscalingOptionsRequest) bool {
-			return req.Id == "nodeGroup5"
-		}),
-	).Return(
-		&protos.NodeGroupAutoscalingOptionsResponse{
-			NodeGroupAutoscalingOptions: &protos.NodeGroupAutoscalingOptions{
-				ScaleDownUtilizationThreshold:    0.6,
-				ScaleDownGpuUtilizationThreshold: 0.7,
-				ScaleDownUnneededDuration:        durationpb.New(time.Minute),
-				ScaleDownUnreadyDuration:         durationpb.New(time.Hour),
-				MaxNodeProvisionDuration:         durationpb.New(time.Minute),
-			},
-		},
-		nil,
-	)
-
-	ng5 := NodeGroup{
-		id:          "nodeGroup5",
-		client:      client,
-		grpcTimeout: defaultGRPCTimeout,
-	}
-
-	opts, err = ng5.GetOptions(defaultsOpts)
-	assert.NoError(t, err)
-	assert.Equal(t, 0.6, opts.ScaleDownUtilizationThreshold)
-	assert.Equal(t, 0.7, opts.ScaleDownGpuUtilizationThreshold)
-	assert.Equal(t, time.Minute, opts.ScaleDownUnneededTime)
-	assert.Equal(t, time.Hour, opts.ScaleDownUnreadyTime)
-	assert.Equal(t, time.Minute, opts.MaxNodeProvisionTime)
-	assert.Equal(t, false, opts.ZeroOrMaxNodeScaling)
-	assert.Equal(t, false, opts.IgnoreDaemonSetsUtilization)
 
 }
 

@@ -17,12 +17,10 @@ limitations under the License.
 package spec
 
 import (
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	v1lister "k8s.io/client-go/listers/core/v1"
-
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
-	resourcehelpers "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/resources"
+	v1lister "k8s.io/client-go/listers/core/v1"
 )
 
 // BasicPodSpec contains basic information defining a pod and its containers.
@@ -33,8 +31,6 @@ type BasicPodSpec struct {
 	PodLabels map[string]string
 	// List of containers within this pod.
 	Containers []BasicContainerSpec
-	// List of init containers within this pod.
-	InitContainers []BasicContainerSpec
 	// PodPhase describing current life cycle phase of the Pod.
 	Phase v1.PodPhase
 }
@@ -80,64 +76,55 @@ func (client *specClient) GetPodSpecs() ([]*BasicPodSpec, error) {
 	}
 	return podSpecs, nil
 }
-
 func newBasicPodSpec(pod *v1.Pod) *BasicPodSpec {
-	containerSpecs := newContainerSpecs(pod, pod.Spec.Containers, false /* isInitContainer */)
-	initContainerSpecs := newContainerSpecs(pod, pod.Spec.InitContainers, true /* isInitContainer */)
+	podId := model.PodID{
+		PodName:   pod.Name,
+		Namespace: pod.Namespace,
+	}
+	containerSpecs := newContainerSpecs(podId, pod)
 
 	basicPodSpec := &BasicPodSpec{
-		ID:             podID(pod),
-		PodLabels:      pod.Labels,
-		Containers:     containerSpecs,
-		InitContainers: initContainerSpecs,
-		Phase:          pod.Status.Phase,
+		ID:         podId,
+		PodLabels:  pod.Labels,
+		Containers: containerSpecs,
+		Phase:      pod.Status.Phase,
 	}
 	return basicPodSpec
 }
 
-func newContainerSpecs(pod *v1.Pod, containers []v1.Container, isInitContainer bool) []BasicContainerSpec {
+func newContainerSpecs(podID model.PodID, pod *v1.Pod) []BasicContainerSpec {
 	var containerSpecs []BasicContainerSpec
-	for _, container := range containers {
-		containerSpec := newContainerSpec(pod, container, isInitContainer)
+
+	for _, container := range pod.Spec.Containers {
+		containerSpec := newContainerSpec(podID, container)
 		containerSpecs = append(containerSpecs, containerSpec)
 	}
+
 	return containerSpecs
 }
 
-func newContainerSpec(pod *v1.Pod, container v1.Container, isInitContainer bool) BasicContainerSpec {
+func newContainerSpec(podID model.PodID, container v1.Container) BasicContainerSpec {
 	containerSpec := BasicContainerSpec{
 		ID: model.ContainerID{
-			PodID:         podID(pod),
+			PodID:         podID,
 			ContainerName: container.Name,
 		},
 		Image:   container.Image,
-		Request: calculateRequestedResources(pod, container, isInitContainer),
+		Request: calculateRequestedResources(container),
 	}
 	return containerSpec
 }
 
-func calculateRequestedResources(pod *v1.Pod, container v1.Container, isInitContainer bool) model.Resources {
-	requestsAndLimitsFn := resourcehelpers.ContainerRequestsAndLimits
-	if isInitContainer {
-		requestsAndLimitsFn = resourcehelpers.InitContainerRequestsAndLimits
-	}
-	requests, _ := requestsAndLimitsFn(container.Name, pod)
-
-	cpuQuantity := requests[v1.ResourceCPU]
+func calculateRequestedResources(container v1.Container) model.Resources {
+	cpuQuantity := container.Resources.Requests[v1.ResourceCPU]
 	cpuMillicores := cpuQuantity.MilliValue()
 
-	memoryQuantity := requests[v1.ResourceMemory]
+	memoryQuantity := container.Resources.Requests[v1.ResourceMemory]
 	memoryBytes := memoryQuantity.Value()
 
 	return model.Resources{
 		model.ResourceCPU:    model.ResourceAmount(cpuMillicores),
 		model.ResourceMemory: model.ResourceAmount(memoryBytes),
 	}
-}
 
-func podID(pod *v1.Pod) model.PodID {
-	return model.PodID{
-		PodName:   pod.Name,
-		Namespace: pod.Namespace,
-	}
 }

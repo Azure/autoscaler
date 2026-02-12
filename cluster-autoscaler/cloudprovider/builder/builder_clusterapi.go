@@ -22,7 +22,7 @@ package builder
 import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/clusterapi"
-	coreoptions "k8s.io/autoscaler/cluster-autoscaler/core/options"
+	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/client-go/informers"
 )
 
@@ -31,10 +31,10 @@ var AvailableCloudProviders = []string{
 	cloudprovider.ClusterAPIProviderName,
 }
 
-// DefaultCloudProvider for Cluster API-only build is Cluster API.
+// DefaultCloudProvider for machineapi-only build.
 const DefaultCloudProvider = cloudprovider.ClusterAPIProviderName
 
-func buildCloudProvider(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter, _ informers.SharedInformerFactory) cloudprovider.CloudProvider {
+func buildCloudProvider(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter, _ informers.SharedInformerFactory) cloudprovider.CloudProvider {
 	switch opts.CloudProviderName {
 	case cloudprovider.ClusterAPIProviderName:
 		return clusterapi.BuildClusterAPI(opts, do, rl)

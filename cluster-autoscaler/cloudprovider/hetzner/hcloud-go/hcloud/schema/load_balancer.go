@@ -251,7 +251,7 @@ type LoadBalancerDeleteServiceResponse struct {
 
 type LoadBalancerCreateRequest struct {
 	Name             string                              `json:"name"`
-	LoadBalancerType IDOrName                            `json:"load_balancer_type"`
+	LoadBalancerType interface{}                         `json:"load_balancer_type"` // int or string
 	Algorithm        *LoadBalancerCreateRequestAlgorithm `json:"algorithm,omitempty"`
 	Location         *string                             `json:"location,omitempty"`
 	NetworkZone      *string                             `json:"network_zone,omitempty"`
@@ -353,7 +353,6 @@ type LoadBalancerActionChangeAlgorithmResponse struct {
 type LoadBalancerActionAttachToNetworkRequest struct {
 	Network int64   `json:"network"`
 	IP      *string `json:"ip,omitempty"`
-	IPRange *string `json:"ip_range,omitempty"`
 }
 
 type LoadBalancerActionAttachToNetworkResponse struct {
@@ -381,7 +380,7 @@ type LoadBalancerActionDisablePublicInterfaceResponse struct {
 }
 
 type LoadBalancerActionChangeTypeRequest struct {
-	LoadBalancerType IDOrName `json:"load_balancer_type"`
+	LoadBalancerType interface{} `json:"load_balancer_type"` // int or string
 }
 
 type LoadBalancerActionChangeTypeResponse struct {

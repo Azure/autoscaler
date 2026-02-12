@@ -90,7 +90,6 @@ func TestDigitalOceanManager_Refresh(t *testing.T) {
 		assert.NoError(t, err)
 
 		client := &doClientMock{}
-		client = setGetNodeTemplateMock(client, 4)
 		ctx := context.Background()
 
 		client.On("ListNodePools", ctx, manager.clusterID, nil).Return(
@@ -148,8 +147,6 @@ func TestDigitalOceanManager_RefreshWithNodeSpec(t *testing.T) {
 		assert.NoError(t, err)
 
 		client := &doClientMock{}
-		client = setGetNodeTemplateMock(client, 4)
-
 		ctx := context.Background()
 
 		client.On("ListNodePools", ctx, manager.clusterID, nil).Return(

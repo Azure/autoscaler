@@ -35,8 +35,6 @@ type NodeGroupConfigProcessor interface {
 	GetScaleDownGpuUtilizationThreshold(nodeGroup cloudprovider.NodeGroup) (float64, error)
 	// GetMaxNodeProvisionTime return MaxNodeProvisionTime value that should be used for a given NodeGroup.
 	GetMaxNodeProvisionTime(nodeGroup cloudprovider.NodeGroup) (time.Duration, error)
-	// GetMaxNodeStartupTime return MaxNodeStartupTime value that should be used for a given NodeGroup.
-	GetMaxNodeStartupTime(nodeGroup cloudprovider.NodeGroup) (time.Duration, error)
 	// GetIgnoreDaemonSetsUtilization returns IgnoreDaemonSetsUtilization value that should be used for a given NodeGroup.
 	GetIgnoreDaemonSetsUtilization(nodeGroup cloudprovider.NodeGroup) (bool, error)
 	// CleanUp cleans up processor's internal structures.
@@ -108,18 +106,6 @@ func (p *DelegatingNodeGroupConfigProcessor) GetMaxNodeProvisionTime(nodeGroup c
 		return p.nodeGroupDefaults.MaxNodeProvisionTime, nil
 	}
 	return ngConfig.MaxNodeProvisionTime, nil
-}
-
-// GetMaxNodeStartupTime returns MaxNodeStartupTime value that should be used for a given NodeGroup.
-func (p *DelegatingNodeGroupConfigProcessor) GetMaxNodeStartupTime(nodeGroup cloudprovider.NodeGroup) (time.Duration, error) {
-	ngConfig, err := nodeGroup.GetOptions(p.nodeGroupDefaults)
-	if err != nil && err != cloudprovider.ErrNotImplemented {
-		return p.nodeGroupDefaults.MaxNodeStartupTime, err
-	}
-	if ngConfig == nil || err == cloudprovider.ErrNotImplemented {
-		return p.nodeGroupDefaults.MaxNodeStartupTime, nil
-	}
-	return ngConfig.MaxNodeStartupTime, nil
 }
 
 // GetIgnoreDaemonSetsUtilization returns IgnoreDaemonSetsUtilization value that should be used for a given NodeGroup.

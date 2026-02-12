@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"os"
 
-	"sigs.k8s.io/yaml"
+	"gopkg.in/yaml.v2"
 )
 
 const (

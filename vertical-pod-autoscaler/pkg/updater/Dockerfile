@@ -12,28 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM --platform=$BUILDPLATFORM golang:1.25.7 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.23.4 AS builder
 
-WORKDIR /workspace
+ENV GOPATH=/gopath/
+ENV PATH=$GOPATH/bin:$PATH
 
-# Copy the Go Modules manifests
-COPY go.mod go.mod
-COPY go.sum go.sum
-
-RUN go mod download
-
-COPY common common
-COPY pkg pkg
+COPY . /gopath/src/k8s.io/autoscaler/vertical-pod-autoscaler
+WORKDIR /gopath/src/k8s.io/autoscaler/vertical-pod-autoscaler
 
 ARG TARGETOS TARGETARCH
-ARG BUILD_LD_FLAGS="-s"
 
-RUN CGO_ENABLED=0 LD_FLAGS=-s GOARCH=$TARGETARCH GOOS=$TARGETOS go build -C pkg/updater -ldflags="${BUILD_LD_FLAGS}" -o updater-$TARGETARCH
+RUN CGO_ENABLED=0 LD_FLAGS=-s GOARCH=$TARGETARCH GOOS=$TARGETOS go build -C pkg/updater -mod vendor -o updater-$TARGETARCH
 
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static:latest
 
 ARG TARGETARCH
 
-COPY --from=builder /workspace/pkg/updater/updater-$TARGETARCH /updater
+COPY --from=builder /gopath/src/k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/updater-$TARGETARCH /updater
 
 ENTRYPOINT ["/updater"]

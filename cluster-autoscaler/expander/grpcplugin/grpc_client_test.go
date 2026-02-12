@@ -22,7 +22,6 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/grpcplugin/protos"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/mocks"
@@ -65,21 +64,25 @@ var (
 		NodeGroupId: eoT2Micro.NodeGroup.Id(),
 		NodeCount:   int32(eoT2Micro.NodeCount),
 		Debug:       eoT2Micro.Debug,
+		Pod:         eoT2Micro.Pods,
 	}
 	grpcEoT2Large = protos.Option{
 		NodeGroupId: eoT2Large.NodeGroup.Id(),
 		NodeCount:   int32(eoT2Large.NodeCount),
 		Debug:       eoT2Large.Debug,
+		Pod:         eoT2Large.Pods,
 	}
 	grpcEoT3Large = protos.Option{
 		NodeGroupId: eoT3Large.NodeGroup.Id(),
 		NodeCount:   int32(eoT3Large.NodeCount),
 		Debug:       eoT3Large.Debug,
+		Pod:         eoT3Large.Pods,
 	}
 	grpcEoM44XLarge = protos.Option{
 		NodeGroupId: eoM44XLarge.NodeGroup.Id(),
 		NodeCount:   int32(eoM44XLarge.NodeCount),
 		Debug:       eoM44XLarge.Debug,
+		Pod:         eoM44XLarge.Pods,
 	}
 )
 
@@ -132,14 +135,13 @@ func makeFakeNodeInfos() map[string]*framework.NodeInfo {
 
 func TestPopulateNodeInfoForGRPC(t *testing.T) {
 	nodeInfos := makeFakeNodeInfos()
-	grpcNodeBytesMap := populateNodeInfoForGRPC(nodeInfos)
+	grpcNodeInfoMap := populateNodeInfoForGRPC(nodeInfos)
 
-	expectedGrpcNodeBytesMap := make(map[string][]byte)
+	expectedGrpcNodeInfoMap := make(map[string]*v1.Node)
 	for i, opt := range options {
-		expectedGrpcNodeBytesMap[opt.NodeGroup.Id()], _ = nodes[i].Marshal()
+		expectedGrpcNodeInfoMap[opt.NodeGroup.Id()] = nodes[i]
 	}
-
-	assert.Equal(t, expectedGrpcNodeBytesMap, grpcNodeBytesMap)
+	assert.Equal(t, expectedGrpcNodeInfoMap, grpcNodeInfoMap)
 }
 
 func TestValidTransformAndSanitizeOptionsFromGRPC(t *testing.T) {
@@ -176,13 +178,13 @@ func TestBestOptionsValid(t *testing.T) {
 	g := &grpcclientstrategy{mockClient}
 
 	nodeInfos := makeFakeNodeInfos()
-	grpcNodeBytesMap := make(map[string][]byte)
+	grpcNodeInfoMap := make(map[string]*v1.Node)
 	for i, opt := range options {
-		grpcNodeBytesMap[opt.NodeGroup.Id()], _ = nodes[i].Marshal()
+		grpcNodeInfoMap[opt.NodeGroup.Id()] = nodes[i]
 	}
 	expectedBestOptionsReq := &protos.BestOptionsRequest{
-		Options:      []*protos.Option{&grpcEoT2Micro, &grpcEoT2Large, &grpcEoT3Large, &grpcEoM44XLarge},
-		NodeBytesMap: grpcNodeBytesMap,
+		Options: []*protos.Option{&grpcEoT2Micro, &grpcEoT2Large, &grpcEoT3Large, &grpcEoM44XLarge},
+		NodeMap: grpcNodeInfoMap,
 	}
 
 	mockClient.EXPECT().BestOptions(
@@ -218,13 +220,12 @@ func TestBestOptionsEmpty(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		grpcNodeBytesMap := populateNodeInfoForGRPC(makeFakeNodeInfos())
-		assert.NotNil(t, grpcNodeBytesMap)
+		grpcNodeInfoMap := populateNodeInfoForGRPC(makeFakeNodeInfos())
 		mockClient.EXPECT().BestOptions(
 			gomock.Any(), gomock.Eq(
 				&protos.BestOptionsRequest{
-					Options:      []*protos.Option{&grpcEoT2Micro, &grpcEoT2Large, &grpcEoT3Large, &grpcEoM44XLarge},
-					NodeBytesMap: grpcNodeBytesMap,
+					Options: []*protos.Option{&grpcEoT2Micro, &grpcEoT2Large, &grpcEoT3Large, &grpcEoM44XLarge},
+					NodeMap: grpcNodeInfoMap,
 				})).Return(&tc.mockResponse, nil)
 		resp := g.BestOptions(options, makeFakeNodeInfos())
 
@@ -243,6 +244,7 @@ func TestBestOptionsErrors(t *testing.T) {
 		NodeGroupId: "badID",
 		NodeCount:   int32(eoM44XLarge.NodeCount),
 		Debug:       eoM44XLarge.Debug,
+		Pod:         eoM44XLarge.Pods,
 	}
 
 	testCases := []struct {
@@ -282,14 +284,13 @@ func TestBestOptionsErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		grpcNodeBytesMap := populateNodeInfoForGRPC(tc.nodeInfo)
-		assert.NotNil(t, grpcNodeBytesMap)
+		grpcNodeInfoMap := populateNodeInfoForGRPC(tc.nodeInfo)
 		if tc.client.grpcClient != nil {
 			mockClient.EXPECT().BestOptions(
 				gomock.Any(), gomock.Eq(
 					&protos.BestOptionsRequest{
-						Options:      []*protos.Option{&grpcEoT2Micro, &grpcEoT2Large, &grpcEoT3Large, &grpcEoM44XLarge},
-						NodeBytesMap: grpcNodeBytesMap,
+						Options: []*protos.Option{&grpcEoT2Micro, &grpcEoT2Large, &grpcEoT3Large, &grpcEoM44XLarge},
+						NodeMap: grpcNodeInfoMap,
 					})).Return(&tc.mockResponse, tc.errResponse)
 		}
 		resp := tc.client.BestOptions(options, tc.nodeInfo)

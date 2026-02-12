@@ -18,7 +18,7 @@ package test
 
 import (
 	"k8s.io/autoscaler/cluster-autoscaler/config"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor"
 	"k8s.io/autoscaler/cluster-autoscaler/observers/nodegroupchange"
 	"k8s.io/autoscaler/cluster-autoscaler/processors"
@@ -31,21 +31,17 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodeinfosprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodes"
-	"k8s.io/autoscaler/cluster-autoscaler/processors/pods"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/scaledowncandidates"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/scheduling"
 )
 
 // NewTestProcessors returns a set of simple processors for use in tests.
-func NewTestProcessors(options config.AutoscalingOptions) (*processors.AutoscalingProcessors, ca_context.TemplateNodeInfoRegistry) {
-	templateNodeInfoProvider := nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil, false)
-	templateNodeInfoRegistry := nodeinfosprovider.NewTemplateNodeInfoRegistry(templateNodeInfoProvider)
-
+func NewTestProcessors(context *context.AutoscalingContext) *processors.AutoscalingProcessors {
 	return &processors.AutoscalingProcessors{
 		PodListProcessor:       podlistprocessor.NewDefaultPodListProcessor(scheduling.ScheduleAnywhere),
 		NodeGroupListProcessor: &nodegroups.NoOpNodeGroupListProcessor{},
-		BinpackingLimiter:      binpacking.NewTimeLimiter(options.MaxNodeGroupBinpackingDuration),
+		BinpackingLimiter:      binpacking.NewTimeLimiter(context.MaxNodeGroupBinpackingDuration),
 		NodeGroupSetProcessor:  nodegroupset.NewDefaultNodeGroupSetProcessor([]string{}, config.NodeGroupDifferenceRatios{}),
 		ScaleDownSetProcessor:  nodes.NewAtomicResizeFilteringProcessor(),
 		// TODO(bskiba): change scale up test so that this can be a NoOpProcessor
@@ -53,13 +49,12 @@ func NewTestProcessors(options config.AutoscalingOptions) (*processors.Autoscali
 		ScaleDownStatusProcessor:    &status.NoOpScaleDownStatusProcessor{},
 		AutoscalingStatusProcessor:  &status.NoOpAutoscalingStatusProcessor{},
 		NodeGroupManager:            nodegroups.NewDefaultNodeGroupManager(),
-		TemplateNodeInfoProvider:    templateNodeInfoProvider,
-		NodeGroupConfigProcessor:    nodegroupconfig.NewDefaultNodeGroupConfigProcessor(options.NodeGroupDefaults),
-		CustomResourcesProcessor:    customresources.NewDefaultCustomResourcesProcessor(true, false),
+		TemplateNodeInfoProvider:    nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(nil, false),
+		NodeGroupConfigProcessor:    nodegroupconfig.NewDefaultNodeGroupConfigProcessor(context.NodeGroupDefaults),
+		CustomResourcesProcessor:    customresources.NewDefaultCustomResourcesProcessor(),
 		ActionableClusterProcessor:  actionablecluster.NewDefaultActionableClusterProcessor(),
 		ScaleDownCandidatesNotifier: scaledowncandidates.NewObserversList(),
 		ScaleStateNotifier:          nodegroupchange.NewNodeGroupChangeObserversList(),
 		AsyncNodeGroupStateChecker:  asyncnodegroups.NewDefaultAsyncNodeGroupStateChecker(),
-		ScaleUpEnforcer:             pods.NewDefaultScaleUpEnforcer(),
-	}, templateNodeInfoRegistry
+	}
 }

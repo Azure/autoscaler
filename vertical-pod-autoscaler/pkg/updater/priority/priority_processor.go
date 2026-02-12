@@ -20,12 +20,10 @@ import (
 	"math"
 
 	apiv1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
-
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/annotations"
-	resourcehelpers "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/resources"
 	vpa_api_util "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
+	"k8s.io/klog/v2"
 )
 
 // PriorityProcessor calculates priority for pod updates.
@@ -66,8 +64,7 @@ func (*defaultPriorityProcessor) GetUpdatePriority(pod *apiv1.Pod, vpa *vpa_type
 			totalRecommendedPerResource[resourceName] += recommended.MilliValue()
 			lowerBound, hasLowerBound := recommendedRequest.LowerBound[resourceName]
 			upperBound, hasUpperBound := recommendedRequest.UpperBound[resourceName]
-			requests, _ := resourcehelpers.ContainerRequestsAndLimits(podContainer.Name, pod)
-			if request, hasRequest := requests[resourceName]; hasRequest {
+			if request, hasRequest := podContainer.Resources.Requests[resourceName]; hasRequest {
 				totalRequestPerResource[resourceName] += request.MilliValue()
 				if recommended.MilliValue() > request.MilliValue() {
 					scaleUp = true

@@ -19,7 +19,7 @@ package scaledowncandidates
 import (
 	apiv1 "k8s.io/api/core/v1"
 
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodes"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 )
@@ -33,15 +33,15 @@ type ScaleDownCandidatesSortingProcessor struct {
 
 // GetPodDestinationCandidates returns nodes that potentially could act as destinations for pods
 // that would become unscheduled after a scale down.
-func (p *ScaleDownCandidatesSortingProcessor) GetPodDestinationCandidates(autoscalingCtx *ca_context.AutoscalingContext,
+func (p *ScaleDownCandidatesSortingProcessor) GetPodDestinationCandidates(ctx *context.AutoscalingContext,
 	nodes []*apiv1.Node) ([]*apiv1.Node, errors.AutoscalerError) {
-	return p.preFilter.GetPodDestinationCandidates(autoscalingCtx, nodes)
+	return p.preFilter.GetPodDestinationCandidates(ctx, nodes)
 }
 
 // GetScaleDownCandidates returns filter nodes and move previous scale down candidates to the beginning of the list.
-func (p *ScaleDownCandidatesSortingProcessor) GetScaleDownCandidates(autoscalingCtx *ca_context.AutoscalingContext,
+func (p *ScaleDownCandidatesSortingProcessor) GetScaleDownCandidates(ctx *context.AutoscalingContext,
 	nodes []*apiv1.Node) ([]*apiv1.Node, errors.AutoscalerError) {
-	candidates, err := p.preFilter.GetScaleDownCandidates(autoscalingCtx, nodes)
+	candidates, err := p.preFilter.GetScaleDownCandidates(ctx, nodes)
 	if err != nil {
 		return candidates, err
 	}

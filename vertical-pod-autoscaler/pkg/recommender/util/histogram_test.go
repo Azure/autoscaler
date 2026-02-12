@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 )
 
@@ -171,7 +170,7 @@ func TestHistogramSaveToCheckpointDropsRelativelySmallValues(t *testing.T) {
 	s, err := h.SaveToChekpoint()
 	assert.NoError(t, err)
 
-	assert.Equal(t, 100001. /* w1 + w2 */, s.TotalWeight)
+	assert.Equal(t, 100001. /*w1+w2*/, s.TotalWeight)
 	// Bucket 1 shouldn't be there
 	assert.Len(t, s.BucketWeights, 1)
 	assert.Contains(t, s.BucketWeights, bucket2)
@@ -197,7 +196,7 @@ func TestHistogramSaveToCheckpointForMultipleValues(t *testing.T) {
 
 	s, err := h.SaveToChekpoint()
 	assert.NoError(t, err)
-	assert.Equal(t, 10051. /* w1 + w2 + w3 */, s.TotalWeight)
+	assert.Equal(t, 10051. /*w1 + w2 + w3*/, s.TotalWeight)
 	assert.Len(t, s.BucketWeights, 3)
 	assert.Equal(t, uint32(1), s.BucketWeights[bucket1])
 	assert.Equal(t, uint32(10000), s.BucketWeights[bucket2])
@@ -265,54 +264,8 @@ func TestHistogramLoadFromCheckpointReturnsErrorOnNilInput(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestHistogramIsNotEmptyAfterSavingAndLoadingCheckpointsWithBoundaryValues(t *testing.T) {
-	// There is a specific scenario in which the weights of the minimum and maximum histogram buckets,
-	// when saved to a VPACheckpoint and subsequently loaded, result in diminished weights for the minimum buckets.
-
-	// This issue arises due to rounding errors when converting float weights to integers in the VPACheckpoint.
-	// For instance, consider the weights:
-	// `w1` which approximates but is slightly larger than or equal to `epsilon`,
-	// `w2` which approximates but is slightly smaller than or equal to (`MaxCheckpointWeight` * `epsilon`) - `epsilon`.
-
-	// When these weights are stored in a VPACheckpoint, they are translated to integers:
-	// `w1` rounds to `1` (`wi1`),
-	// `w2` rounds to `MaxCheckpointWeight` (`wi2`).
-
-	// Upon loading from the VPACheckpoint, the histogram reconstructs its weights using a calculated ratio,
-	// aimed at reverting integer weights back to float values. This ratio is derived from:
-	// (`w1` + `w2`) / (`wi1` + `wi2`)
-	// Reference:  https://github.com/kubernetes/autoscaler/blob/aa1d413ea3bf319b56c7b2e65ade1a028e149439/vertical-pod-autoscaler//pkg/recommender/util/histogram.go#L256-L269
-
-	// Given the maximum potential values for `w1`, `w2`, `wi1` and `wi2` we arrive at:
-	// (`epsilon` + `MaxCheckpointWeight` * `epsilon` - `epsilon`) / (1 + MaxCheckpointWeight) = epsilon * `MaxCheckpointWeight` / (1 + MaxCheckpointWeight)
-
-	// Consequently, the maximum value for this ratio is less than `epsilon`, implying that when `w1`,
-	// initially scaled to `1`, is adjusted by this ratio, its recalculated weight falls short of `epsilon`.
-	// When the `minBucket`'s weight is less than `epsilon`, the `histogram.IsEmpty()` returns true.
-	// Reference: https://github.com/kubernetes/autoscaler/blob/aa1d413ea3bf319b56c7b2e65ade1a028e149439/vertical-pod-autoscaler/pkg/recommender/util/histogram.go#L181-L183
-	// Consequently, the `histogram.Percentile(...)` function will always return 0.
-	// Reference: https://github.com/kubernetes/autoscaler/blob/aa1d413ea3bf319b56c7b2e65ade1a028e149439/vertical-pod-autoscaler/pkg/recommender/util/histogram.go#L159-L162
-	// The same behavior can be observed when there are more than two weights.
-
-	// This test ensures that in such cases the histogram does not become empty.
-	// For more information check https://github.com/kubernetes/autoscaler/issues/7726
-
-	histogram := NewHistogram(testHistogramOptions)
-	histogram.AddSample(1, weightEpsilon, anyTime)
-	histogram.AddSample(2, (float64(MaxCheckpointWeight)*weightEpsilon - weightEpsilon), anyTime)
-	assert.False(t, histogram.IsEmpty())
-
-	checkpoint, err := histogram.SaveToChekpoint()
-	assert.NoError(t, err)
-
-	newHistogram := NewHistogram(testHistogramOptions)
-	err = newHistogram.LoadFromCheckpoint(checkpoint)
-	assert.NoError(t, err)
-	assert.False(t, newHistogram.IsEmpty())
-}
-
-func areUnique(values ...any) bool {
-	dict := make(map[any]bool)
+func areUnique(values ...interface{}) bool {
+	dict := make(map[interface{}]bool)
 	for i, v := range values {
 		dict[v] = true
 		if len(dict) != i+1 {

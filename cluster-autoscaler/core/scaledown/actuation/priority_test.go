@@ -73,7 +73,7 @@ func TestPriorityEvictor(t *testing.T) {
 		MaxGracefulTerminationSec: 20,
 		MaxPodEvictionTime:        5 * time.Second,
 	}
-	autoscalingCtx, err := NewScaleTestAutoscalingContext(options, fakeClient, nil, nil, nil, nil, nil)
+	ctx, err := NewScaleTestAutoscalingContext(options, fakeClient, nil, nil, nil, nil)
 	assert.NoError(t, err)
 
 	evictor := Evictor{
@@ -95,10 +95,10 @@ func TestPriorityEvictor(t *testing.T) {
 		},
 		fullDsEviction: true,
 	}
-	clustersnapshot.InitializeClusterSnapshotOrDie(t, autoscalingCtx.ClusterSnapshot, []*apiv1.Node{n1}, []*apiv1.Pod{p1, p2, p3})
-	nodeInfo, err := autoscalingCtx.ClusterSnapshot.GetNodeInfo(n1.Name)
+	clustersnapshot.InitializeClusterSnapshotOrDie(t, ctx.ClusterSnapshot, []*apiv1.Node{n1}, []*apiv1.Pod{p1, p2, p3})
+	nodeInfo, err := ctx.ClusterSnapshot.GetNodeInfo(n1.Name)
 	assert.NoError(t, err)
-	_, err = evictor.DrainNode(&autoscalingCtx, nodeInfo)
+	_, err = evictor.DrainNode(&ctx, nodeInfo)
 	assert.NoError(t, err)
 	deleted := make([]string, 0)
 	deleted = append(deleted, utils.GetStringFromChan(deletedPods))
@@ -182,4 +182,58 @@ func TestGroupByPriority(t *testing.T) {
 
 	groups := groupByPriority(shutdownGracePeriodByPodPriority, []*apiv1.Pod{p1, p2, p3, p4, p5}, []*apiv1.Pod{p6, p7, p8, p9, p10})
 	assert.Equal(t, wantGroups, groups)
+}
+
+func TestParseShutdownGracePeriodsAndPriorities(t *testing.T) {
+	testCases := []struct {
+		name  string
+		input string
+		want  []kubelet_config.ShutdownGracePeriodByPodPriority
+	}{
+		{
+			name:  "empty input",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "Incorrect string - incorrect priority grace period pairs",
+			input: "1:2,34",
+			want:  nil,
+		},
+		{
+			name:  "Incorrect string - trailing ,",
+			input: "1:2, 3:4,",
+			want:  nil,
+		},
+		{
+			name:  "Incorrect string - trailing space",
+			input: "1:2,3:4 ",
+			want:  nil,
+		},
+		{
+			name:  "Non integers - 1",
+			input: "1:2,3:a",
+			want:  nil,
+		},
+		{
+			name:  "Non integers - 2",
+			input: "1:2,3:23.2",
+			want:  nil,
+		},
+		{
+			name:  "parsable input",
+			input: "1:2,3:4",
+			want: []kubelet_config.ShutdownGracePeriodByPodPriority{
+				{1, 2},
+				{3, 4},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			shutdownGracePeriodByPodPriority := ParseShutdownGracePeriodsAndPriorities(tc.input)
+			assert.Equal(t, tc.want, shutdownGracePeriodByPodPriority)
+		})
+	}
 }

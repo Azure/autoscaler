@@ -28,34 +28,38 @@ type testFailer interface {
 	Fatalf(format string, args ...any)
 }
 
+// NewTestSnapshot returns an instance of ClusterSnapshot that can be used in tests.
+func NewTestSnapshot() (clustersnapshot.ClusterSnapshot, error) {
+	testFwHandle, err := framework.NewTestFrameworkHandle()
+	if err != nil {
+		return nil, err
+	}
+	return predicate.NewPredicateSnapshot(store.NewBasicSnapshotStore(), testFwHandle), nil
+}
+
 // NewTestSnapshotOrDie returns an instance of ClusterSnapshot that can be used in tests.
 func NewTestSnapshotOrDie(t testFailer) clustersnapshot.ClusterSnapshot {
-	snapshot, _, err := NewTestSnapshotAndHandle()
+	snapshot, err := NewTestSnapshot()
 	if err != nil {
 		t.Fatalf("NewTestSnapshotOrDie: couldn't create test ClusterSnapshot: %v", err)
 	}
 	return snapshot
 }
 
+// NewCustomTestSnapshot returns an instance of ClusterSnapshot with a specific ClusterSnapshotStore that can be used in tests.
+func NewCustomTestSnapshot(snapshotStore clustersnapshot.ClusterSnapshotStore) (clustersnapshot.ClusterSnapshot, error) {
+	testFwHandle, err := framework.NewTestFrameworkHandle()
+	if err != nil {
+		return nil, err
+	}
+	return predicate.NewPredicateSnapshot(snapshotStore, testFwHandle), nil
+}
+
 // NewCustomTestSnapshotOrDie returns an instance of ClusterSnapshot with a specific ClusterSnapshotStore that can be used in tests.
 func NewCustomTestSnapshotOrDie(t testFailer, snapshotStore clustersnapshot.ClusterSnapshotStore) clustersnapshot.ClusterSnapshot {
-	result, _, err := NewCustomTestSnapshotAndHandle(snapshotStore)
+	result, err := NewCustomTestSnapshot(snapshotStore)
 	if err != nil {
 		t.Fatalf("NewCustomTestSnapshotOrDie: couldn't create test ClusterSnapshot: %v", err)
 	}
 	return result
-}
-
-// NewTestSnapshotAndHandle returns an instance of ClusterSnapshot and a framework handle that can be used in tests.
-func NewTestSnapshotAndHandle() (clustersnapshot.ClusterSnapshot, *framework.Handle, error) {
-	return NewCustomTestSnapshotAndHandle(store.NewBasicSnapshotStore())
-}
-
-// NewCustomTestSnapshotAndHandle returns an instance of ClusterSnapshot with a specific ClusterSnapshotStore that can be used in tests.
-func NewCustomTestSnapshotAndHandle(snapshotStore clustersnapshot.ClusterSnapshotStore) (clustersnapshot.ClusterSnapshot, *framework.Handle, error) {
-	testFwHandle, err := framework.NewTestFrameworkHandle()
-	if err != nil {
-		return nil, nil, err
-	}
-	return predicate.NewPredicateSnapshot(snapshotStore, testFwHandle, true, 1, false), testFwHandle, nil
 }

@@ -32,13 +32,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
-	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
-	"github.com/aws/aws-sdk-go-v2/service/ec2"
-	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/aws"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/service/autoscaling"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/service/ec2"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/service/eks"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 )
@@ -68,7 +66,7 @@ type asgTemplate struct {
 	InstanceType *InstanceType
 	Region       string
 	Zone         string
-	Tags         []autoscalingtypes.TagDescription
+	Tags         []*autoscaling.TagDescription
 }
 
 // createAwsManagerInternal allows for custom objects to be passed in by tests
@@ -81,11 +79,8 @@ func createAWSManagerInternal(
 	klog.Infof("AWS SDK Version: %s", aws.SDKVersion)
 
 	if awsService == nil {
-		awsService = &awsWrapper{
-			autoScalingI: autoscaling.NewFromConfig(awsSDKProvider.cfg, autoscaling.WithEndpointResolver(newAutoscalingOverrideResolver(awsSDKProvider.cloudConfig))),
-			ec2I:         ec2.NewFromConfig(awsSDKProvider.cfg, ec2.WithEndpointResolver(newEc2OverrideResolver(awsSDKProvider.cloudConfig))),
-			eksI:         eks.NewFromConfig(awsSDKProvider.cfg, eks.WithEndpointResolver(newEksOverrideResolver(awsSDKProvider.cloudConfig))),
-		}
+		sess := awsSDKProvider.session
+		awsService = &awsWrapper{autoscaling.New(sess), ec2.New(sess), eks.New(sess)}
 	}
 
 	specs, err := parseASGAutoDiscoverySpecs(discoveryOpts)
@@ -329,7 +324,7 @@ func (m *AwsManager) buildNodeFromTemplate(asg *asg, template *asgTemplate) (*ap
 			klog.Errorf("Failed to get tags from EKS DescribeNodegroup API for nodegroup %s in cluster %s because %s.", nodegroupName, clusterName, err)
 		} else if mngTags != nil && len(mngTags) > 0 {
 			resourcesFromMngTags := extractAllocatableResourcesFromTags(mngTags)
-			klog.V(5).Infof("Extracted resources from EKS nodegroup tags %v", resourcesFromMngTags)
+			klog.V(5).Infof("Extracted resources from EKS nodegroup tags %v", resourcesFromTags)
 			// ManagedNodeGroup resource-indicating tags override conflicting tags on the ASG if they exist
 			for resourceName, val := range resourcesFromMngTags {
 				node.Status.Capacity[apiv1.ResourceName(resourceName)] = *val
@@ -368,18 +363,18 @@ func (m *AwsManager) updateCapacityWithRequirementsOverrides(capacity *apiv1.Res
 	instanceRequirements := policy.instanceRequirements
 
 	if instanceRequirements.VCpuCount != nil && instanceRequirements.VCpuCount.Min != nil {
-		(*capacity)[apiv1.ResourceCPU] = *resource.NewQuantity(int64(*instanceRequirements.VCpuCount.Min), resource.DecimalSI)
+		(*capacity)[apiv1.ResourceCPU] = *resource.NewQuantity(*instanceRequirements.VCpuCount.Min, resource.DecimalSI)
 	}
 
 	if instanceRequirements.MemoryMiB != nil && instanceRequirements.MemoryMiB.Min != nil {
-		(*capacity)[apiv1.ResourceMemory] = *resource.NewQuantity(int64(*instanceRequirements.MemoryMiB.Min*1024*1024), resource.DecimalSI)
+		(*capacity)[apiv1.ResourceMemory] = *resource.NewQuantity(*instanceRequirements.MemoryMiB.Min*1024*1024, resource.DecimalSI)
 	}
 
 	for _, manufacturer := range instanceRequirements.AcceleratorManufacturers {
-		if manufacturer == ec2types.AcceleratorManufacturerNvidia {
+		if *manufacturer == autoscaling.AcceleratorManufacturerNvidia {
 			for _, acceleratorType := range instanceRequirements.AcceleratorTypes {
-				if acceleratorType == ec2types.AcceleratorTypeGpu {
-					(*capacity)[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(int64(*instanceRequirements.AcceleratorCount.Min), resource.DecimalSI)
+				if *acceleratorType == autoscaling.AcceleratorTypeGpu {
+					(*capacity)[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(*instanceRequirements.AcceleratorCount.Min, resource.DecimalSI)
 				}
 			}
 		}
@@ -401,7 +396,7 @@ func buildGenericLabels(template *asgTemplate, nodeName string) map[string]strin
 	return result
 }
 
-func extractLabelsFromAsg(tags []autoscalingtypes.TagDescription) map[string]string {
+func extractLabelsFromAsg(tags []*autoscaling.TagDescription) map[string]string {
 	result := make(map[string]string)
 
 	for _, tag := range tags {
@@ -423,22 +418,22 @@ func extractLabelsFromAsg(tags []autoscalingtypes.TagDescription) map[string]str
 	return result
 }
 
-func extractAutoscalingOptionsFromTags(tags []autoscalingtypes.TagDescription) map[string]string {
+func extractAutoscalingOptionsFromTags(tags []*autoscaling.TagDescription) map[string]string {
 	options := make(map[string]string)
 	for _, tag := range tags {
-		if !strings.HasPrefix(aws.ToString(tag.Key), optionsTagsPrefix) {
+		if !strings.HasPrefix(aws.StringValue(tag.Key), optionsTagsPrefix) {
 			continue
 		}
-		splits := strings.Split(aws.ToString(tag.Key), optionsTagsPrefix)
+		splits := strings.Split(aws.StringValue(tag.Key), optionsTagsPrefix)
 		if len(splits) != 2 || splits[1] == "" {
 			continue
 		}
-		options[splits[1]] = aws.ToString(tag.Value)
+		options[splits[1]] = aws.StringValue(tag.Value)
 	}
 	return options
 }
 
-func extractAllocatableResourcesFromAsg(tags []autoscalingtypes.TagDescription) map[string]*resource.Quantity {
+func extractAllocatableResourcesFromAsg(tags []*autoscaling.TagDescription) map[string]*resource.Quantity {
 	result := make(map[string]*resource.Quantity)
 
 	for _, tag := range tags {
@@ -481,7 +476,7 @@ func extractAllocatableResourcesFromTags(tags map[string]string) map[string]*res
 	return result
 }
 
-func extractTaintsFromAsg(tags []autoscalingtypes.TagDescription) []apiv1.Taint {
+func extractTaintsFromAsg(tags []*autoscaling.TagDescription) []apiv1.Taint {
 	taints := make([]apiv1.Taint, 0)
 
 	for _, tag := range tags {

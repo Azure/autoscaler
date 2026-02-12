@@ -653,13 +653,18 @@ func TestFetchAvailableDiskTypes(t *testing.T) {
 	defer server.Close()
 	g := newTestAutoscalingGceClient(t, "project-id", server.URL, "")
 
-	// ref: https://cloud.google.com/compute/docs/reference/rest/v1/diskTypes/list
-	getDiskTypesListOKResponse, _ := os.ReadFile("fixtures/diskTypes_list.json")
-	server.On("handle", "/projects/project-id/zones/us-central1-b/diskTypes").Return(string(getDiskTypesListOKResponse)).Times(1)
+	// ref: https://cloud.google.com/compute/docs/reference/rest/v1/diskTypes/aggregatedList
+	getDiskTypesAggregatedListOKResponse, _ := os.ReadFile("fixtures/diskTypes_aggregatedList.json")
+	server.On("handle", "/projects/project-id/aggregated/diskTypes").Return(string(getDiskTypesAggregatedListOKResponse)).Times(1)
 
 	t.Run("correctly parse a response", func(t *testing.T) {
-		want := []string{"hyperdisk-balanced", "hyperdisk-extreme", "hyperdisk-throughput", "local-ssd", "pd-balanced", "pd-extreme", "pd-ssd", "pd-standard"}
-		got, err := g.FetchAvailableDiskTypes("us-central1-b")
+		want := map[string][]string{
+			// "us-central1" region should be skipped
+			"us-central1-a": {"local-ssd", "pd-balanced", "pd-ssd", "pd-standard"},
+			"us-central1-b": {"hyperdisk-balanced", "hyperdisk-extreme", "hyperdisk-throughput", "local-ssd", "pd-balanced", "pd-extreme", "pd-ssd", "pd-standard"},
+		}
+
+		got, err := g.FetchAvailableDiskTypes()
 
 		assert.NoError(t, err)
 		if diff := cmp.Diff(want, got, cmpopts.EquateErrors()); diff != "" {
@@ -855,7 +860,7 @@ func TestAutoscalingClientTimeouts(t *testing.T) {
 		},
 		"FetchAvailableDiskTypes_HttpClientTimeout": {
 			clientFunc: func(client *autoscalingGceClientV1) error {
-				_, err := client.FetchAvailableDiskTypes("")
+				_, err := client.FetchAvailableDiskTypes()
 				return err
 			},
 			httpTimeout: instantTimeout,
@@ -1266,51 +1271,6 @@ func TestExternalToInternalInstance(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestFetchMigTargetSize(t *testing.T) {
-	mig := GceRef{
-		Project: "project1",
-		Zone:    "us-central1-b",
-		Name:    "mig-1",
-	}
-
-	testCases := []struct {
-		name     string
-		response gce_api.InstanceGroupManager
-		wantSize int64
-	}{
-		{
-			name: "MIG returns correct target size",
-			response: gce_api.InstanceGroupManager{
-				Name:       "mig-1",
-				TargetSize: 42,
-			},
-			wantSize: 42,
-		},
-		{
-			name: "MIG returns correct target size with suspended instances",
-			response: gce_api.InstanceGroupManager{
-				Name:                "mig-1",
-				TargetSize:          42,
-				TargetSuspendedSize: 3,
-			},
-			wantSize: 45,
-		},
-	}
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			server := test_util.NewHttpServerMock()
-			defer server.Close()
-			gceClient := newTestAutoscalingGceClient(t, "project1", server.URL, "")
-			b, _ := json.Marshal(tc.response)
-			server.On("handle", "/projects/project1/zones/us-central1-b/instanceGroupManagers/mig-1").Return(string(b)).Once()
-			size, err := gceClient.FetchMigTargetSize(mig)
-			assert.NoError(t, err)
-			assert.Equal(t, tc.wantSize, size)
-			mock.AssertExpectationsForObjects(t, server)
 		})
 	}
 }

@@ -17,8 +17,6 @@ limitations under the License.
 package options
 
 import (
-	"time"
-
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 )
 
@@ -37,9 +35,6 @@ type NodeDeleteOptions struct {
 	// set or replication controller should have to allow pod deletion during
 	// scale down.
 	MinReplicaCount int
-	// BspDisruptionTimeout is the timeout after which CA will evict
-	// non-pdb-assigned blocking system pods
-	BspDisruptionTimeout time.Duration
 }
 
 // NewNodeDeleteOptions returns new node delete options extracted from autoscaling options.
@@ -49,6 +44,5 @@ func NewNodeDeleteOptions(opts config.AutoscalingOptions) NodeDeleteOptions {
 		SkipNodesWithLocalStorage:         opts.SkipNodesWithLocalStorage,
 		SkipNodesWithCustomControllerPods: opts.SkipNodesWithCustomControllerPods,
 		MinReplicaCount:                   opts.MinReplicaCount,
-		BspDisruptionTimeout:              opts.BspDisruptionTimeout,
 	}
 }

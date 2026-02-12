@@ -29,11 +29,11 @@ type FakePocV1alpha1 struct {
 }
 
 func (c *FakePocV1alpha1) VerticalPodAutoscalers(namespace string) v1alpha1.VerticalPodAutoscalerInterface {
-	return newFakeVerticalPodAutoscalers(c, namespace)
+	return &FakeVerticalPodAutoscalers{c, namespace}
 }
 
 func (c *FakePocV1alpha1) VerticalPodAutoscalerCheckpoints(namespace string) v1alpha1.VerticalPodAutoscalerCheckpointInterface {
-	return newFakeVerticalPodAutoscalerCheckpoints(c, namespace)
+	return &FakeVerticalPodAutoscalerCheckpoints{c, namespace}
 }
 
 // RESTClient returns a RESTClient that is used to communicate

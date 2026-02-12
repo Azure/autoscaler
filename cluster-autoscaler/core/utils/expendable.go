@@ -64,5 +64,7 @@ func FilterOutExpendablePods(pods []*apiv1.Pod, expendablePodsPriorityCutoff int
 
 // IsExpendablePod tests if pod is expendable for give priority cutoff
 func IsExpendablePod(pod *apiv1.Pod, expendablePodsPriorityCutoff int) bool {
-	return pod.Spec.Priority != nil && int(*pod.Spec.Priority) < expendablePodsPriorityCutoff
+	preemptLowerPriority := pod.Spec.PreemptionPolicy == nil || *pod.Spec.PreemptionPolicy == apiv1.PreemptLowerPriority
+	lowPriority := pod.Spec.Priority != nil && int(*pod.Spec.Priority) < expendablePodsPriorityCutoff
+	return preemptLowerPriority && lowPriority
 }

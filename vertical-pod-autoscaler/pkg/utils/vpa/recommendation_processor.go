@@ -17,8 +17,7 @@ limitations under the License.
 package api
 
 import (
-	v1 "k8s.io/api/core/v1"
-
+	"k8s.io/api/core/v1"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 )
 
@@ -30,6 +29,8 @@ type RecommendationProcessor interface {
 	// Apply processes and updates recommendation for given pod, based on container limits,
 	// VPA policy and possibly other internal RecommendationProcessor context.
 	// Must return a non-nil pointer to RecommendedPodResources or error.
-	Apply(vpa *vpa_types.VerticalPodAutoscaler,
+	Apply(podRecommendation *vpa_types.RecommendedPodResources,
+		policy *vpa_types.PodResourcePolicy,
+		conditions []vpa_types.VerticalPodAutoscalerCondition,
 		pod *v1.Pod) (*vpa_types.RecommendedPodResources, ContainerToAnnotationsMap, error)
 }

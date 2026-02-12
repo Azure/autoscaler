@@ -21,10 +21,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	apiv1 "k8s.io/api/core/v1"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	podinjectionbackoff "k8s.io/autoscaler/cluster-autoscaler/processors/podinjection/backoff"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
-	"k8s.io/autoscaler/cluster-autoscaler/simulator/fake"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 )
 
@@ -66,10 +65,10 @@ func TestProcess(t *testing.T) {
 				PodsAwaitEvaluation:     tc.podsAwaitEvaluation,
 				PodsRemainUnschedulable: makeNoScaleUpInfoFromPods(tc.podsRemainUnschedulable),
 			}
-			autoscalingCtx := &ca_context.AutoscalingContext{}
+			ctx := &context.AutoscalingContext{}
 
 			p := NewFakePodsScaleUpStatusProcessor(podinjectionbackoff.NewFakePodControllerRegistry())
-			p.Process(autoscalingCtx, scaleUpStatus)
+			p.Process(ctx, scaleUpStatus)
 
 			assert.ElementsMatch(t, tc.expectedPodsRemainUnschedulable, extractPodsFromNoScaleUpInfo(scaleUpStatus.PodsRemainUnschedulable))
 			assert.ElementsMatch(t, tc.expectedPodsAwaitEvaluation, scaleUpStatus.PodsAwaitEvaluation)
@@ -83,7 +82,7 @@ func createPod(name string, isFake bool) *apiv1.Pod {
 		if !isFake {
 			return
 		}
-		*p = *fake.WithFakePodAnnotation(p)
+		*p = *withFakePodAnnotation(p)
 	})
 }
 

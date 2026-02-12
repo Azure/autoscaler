@@ -75,8 +75,7 @@ func (hc *HealthCheck) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		_, err := w.Write([]byte("OK"))
 		if err != nil {
-			klog.ErrorS(err, "Failed to write response message")
-			klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+			klog.Fatalf("Failed to write response message: %v", err)
 		}
 	}
 }

@@ -11,16 +11,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v2
       - id: filter
-        uses: dorny/paths-filter@v2.11.1
+        uses: dorny/paths-filter@v2.2.0
         with:
           filters: |
             charts:
-              - 'cluster-autoscaler/charts/**/Chart.yaml'
-              - 'cluster-autoscaler/charts/**/*'
-              - 'vertical-pod-autoscaler/charts/**/Chart.yaml'
-              - 'vertical-pod-autoscaler/charts/**/*'
+              - 'charts/**/Chart.yaml'
+              - 'charts/**/*'
           token: ${{ secrets.GITHUB_TOKEN }}
   helm-lint-test:
     if: ${{ needs.changes.outputs.charts == 'true' }}
@@ -30,31 +28,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v2
       - name: Fetch history
         run: git fetch --prune --unshallow
       - name: Set up chart-testing
-        uses: helm/chart-testing-action@v2.7.0
-      - name: Run chart-testing for CA (lint)
-        run: ct lint --chart-dirs cluster-autoscaler/charts --target-branch ${{ github.event.pull_request.base.ref }}
-      - name: Run chart-testing for VPA (lint)
-        run: ct lint --chart-dirs vertical-pod-autoscaler/charts --target-branch ${{ github.event.pull_request.base.ref }} --check-version-increment=false
+        uses: helm/chart-testing-action@v2.0.1
+      - name: Run chart-testing (lint)
+        run: ct lint
       # Only build a kind cluster if there are chart changes to test.
       - name: Run chart-testing (list-changed)
         id: list-changed
         run: |
-          changed=$(ct list-changed --chart-dirs cluster-autoscaler/charts,vertical-pod-autoscaler/charts --target-branch ${{ github.event.pull_request.base.ref }})
+          changed=$(ct list-changed)
           if [[ -n "$changed" ]]; then
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
       - if: steps.list-changed.outputs.changed == 'true'
         name: Create kind cluster
-        uses: helm/kind-action@v1.12.0
-        with:
-          config: .github/kind-config.yaml
+        uses: helm/kind-action@v1.1.0
       - if: steps.list-changed.outputs.changed == 'true'
         name: Run chart-testing (install)
-        run: ct install --chart-dirs cluster-autoscaler/charts,vertical-pod-autoscaler/charts --target-branch ${{ github.event.pull_request.base.ref }}
+        run: ct install
   helm-docs-validate:
     if: ${{ needs.changes.outputs.charts == 'true' }}
     name: Helm Docs
@@ -63,11 +57,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v2
       - name: Run helm-docs
-        uses: losisin/helm-docs-github-action@v1
-        with:
-          fail-on-diff: true
+        uses: docker://jnorwood/helm-docs:v1.3.0
+      - name: Check for changes
+        run: git diff --quiet charts/*/README.md
 
 name: Lint and Test Charts
 on: pull_request

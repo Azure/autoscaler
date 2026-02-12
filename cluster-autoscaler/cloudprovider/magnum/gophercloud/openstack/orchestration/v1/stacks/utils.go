@@ -9,8 +9,7 @@ import (
 	"reflect"
 	"strings"
 
-	"sigs.k8s.io/yaml"
-
+	yaml "gopkg.in/yaml.v2"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud"
 )
 

@@ -18,7 +18,7 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -290,7 +290,7 @@ type VerticalPodAutoscalerCheckpointStatus struct {
 	// Checkpoint of histogram for consumption of memory.
 	MemoryHistogram HistogramCheckpoint `json:"memoryHistogram,omitempty" protobuf:"bytes,4,rep,name=memoryHistogram"`
 
-	// Timestamp of the first sample from the histograms.
+	// Timestamp of the fist sample from the histograms.
 	FirstSampleStart metav1.Time `json:"firstSampleStart,omitempty" protobuf:"bytes,5,opt,name=firstSampleStart"`
 
 	// Timestamp of the last sample from the histograms.

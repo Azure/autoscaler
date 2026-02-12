@@ -41,7 +41,6 @@ type VerticalPodAutoscalerList struct {
 // +kubebuilder:resource:shortName=vpa
 // +kubebuilder:subresource:status
 // +k8s:prerelease-lifecycle-gen=true
-// +kubebuilder:metadata:annotations="api-approved.kubernetes.io=https://github.com/kubernetes/kubernetes/pull/63797"
 
 // VerticalPodAutoscaler is the configuration for a vertical pod
 // autoscaler, which automatically manages pod resources based on historical and
@@ -50,7 +49,6 @@ type VerticalPodAutoscalerList struct {
 // +k8s:prerelease-lifecycle-gen:deprecated=0.13.0
 // +k8s:prerelease-lifecycle-gen:replacement=autoscaling,v1,VerticalPodAutoscaler
 // +kubebuilder:deprecatedversion:warning=autoscaling.k8s.io/v1beta2 API is deprecated
-// +kubebuilder:unservedversion
 type VerticalPodAutoscaler struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
@@ -275,8 +273,6 @@ type VerticalPodAutoscalerCondition struct {
 // +genclient:noStatus
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:resource:shortName=vpacheckpoint
-// +kubebuilder:metadata:annotations="api-approved.kubernetes.io=https://github.com/kubernetes/kubernetes/pull/63797"
-// +kubebuilder:unservedversion
 
 // VerticalPodAutoscalerCheckpoint is the checkpoint of the internal state of VPA that
 // is used for recovery after recommender's restart.
@@ -327,7 +323,7 @@ type VerticalPodAutoscalerCheckpointStatus struct {
 	// Checkpoint of histogram for consumption of memory.
 	MemoryHistogram HistogramCheckpoint `json:"memoryHistogram,omitempty" protobuf:"bytes,4,rep,name=memoryHistogram"`
 
-	// Timestamp of the first sample from the histograms.
+	// Timestamp of the fist sample from the histograms.
 	// +nullable
 	FirstSampleStart metav1.Time `json:"firstSampleStart,omitempty" protobuf:"bytes,5,opt,name=firstSampleStart"`
 

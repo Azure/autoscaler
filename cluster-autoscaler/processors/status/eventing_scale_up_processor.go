@@ -25,7 +25,7 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 )
 
 // EventingScaleUpStatusProcessor processes the state of the cluster after
@@ -35,13 +35,13 @@ type EventingScaleUpStatusProcessor struct{}
 
 // Process processes the state of the cluster after a scale-up by emitting
 // relevant events for pods depending on their post scale-up status.
-func (p *EventingScaleUpStatusProcessor) Process(autoscalingCtx *ca_context.AutoscalingContext, status *ScaleUpStatus) {
-	consideredNodeGroupsMap := cloudprovider.NodeGroupListToMapById(status.ConsideredNodeGroups)
+func (p *EventingScaleUpStatusProcessor) Process(context *context.AutoscalingContext, status *ScaleUpStatus) {
+	consideredNodeGroupsMap := nodeGroupListToMapById(status.ConsideredNodeGroups)
 	if status.Result != ScaleUpSuccessful && status.Result != ScaleUpError {
 		for _, noScaleUpInfo := range status.PodsRemainUnschedulable {
-			autoscalingCtx.Recorder.Event(noScaleUpInfo.Pod, apiv1.EventTypeNormal, "NotTriggerScaleUp",
+			context.Recorder.Event(noScaleUpInfo.Pod, apiv1.EventTypeNormal, "NotTriggerScaleUp",
 				fmt.Sprintf("pod didn't trigger scale-up: %s",
-					ReasonsMessage(status.Result, noScaleUpInfo, consideredNodeGroupsMap)))
+					ReasonsMessage(noScaleUpInfo, consideredNodeGroupsMap)))
 		}
 	} else {
 		klog.V(4).Infof("Skipping event processing for unschedulable pods since there is a" +
@@ -49,7 +49,7 @@ func (p *EventingScaleUpStatusProcessor) Process(autoscalingCtx *ca_context.Auto
 	}
 	if len(status.ScaleUpInfos) > 0 {
 		for _, pod := range status.PodsTriggeredScaleUp {
-			autoscalingCtx.Recorder.Eventf(pod, apiv1.EventTypeNormal, "TriggeredScaleUp",
+			context.Recorder.Eventf(pod, apiv1.EventTypeNormal, "TriggeredScaleUp",
 				"pod triggered scale-up: %v", status.ScaleUpInfos)
 		}
 	}
@@ -60,11 +60,7 @@ func (p *EventingScaleUpStatusProcessor) CleanUp() {
 }
 
 // ReasonsMessage aggregates reasons from NoScaleUpInfos.
-func ReasonsMessage(scaleUpStatus ScaleUpResult, noScaleUpInfo NoScaleUpInfo, consideredNodeGroups map[string]cloudprovider.NodeGroup) string {
-	if scaleUpStatus == ScaleUpLimitedByMaxNodesTotal {
-		return "max total nodes in cluster reached"
-	}
-
+func ReasonsMessage(noScaleUpInfo NoScaleUpInfo, consideredNodeGroups map[string]cloudprovider.NodeGroup) string {
 	messages := []string{}
 	aggregated := map[string]int{}
 	for nodeGroupId, reasons := range noScaleUpInfo.RejectedNodeGroups {
@@ -91,4 +87,12 @@ func ReasonsMessage(scaleUpStatus ScaleUpResult, noScaleUpInfo NoScaleUpInfo, co
 		messages = append(messages, fmt.Sprintf("%d %s", count, msg))
 	}
 	return strings.Join(messages, ", ")
+}
+
+func nodeGroupListToMapById(nodeGroups []cloudprovider.NodeGroup) map[string]cloudprovider.NodeGroup {
+	result := make(map[string]cloudprovider.NodeGroup)
+	for _, nodeGroup := range nodeGroups {
+		result[nodeGroup.Id()] = nodeGroup
+	}
+	return result
 }

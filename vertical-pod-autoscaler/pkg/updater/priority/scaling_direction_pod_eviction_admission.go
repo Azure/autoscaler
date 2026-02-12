@@ -17,12 +17,8 @@ limitations under the License.
 package priority
 
 import (
-	"slices"
-
 	apiv1 "k8s.io/api/core/v1"
-
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
-	resourcehelpers "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/resources"
 	vpa_utils "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/vpa"
 )
 
@@ -39,6 +35,7 @@ type scalingDirectionPodEvictionAdmission struct {
 
 // Admit admits a Pod for eviction in one of three cases
 // * no EvictionRequirement exists for this Pod
+// * no Recommendation exists for at least one Container in this Pod
 // * no Resource requests are set for at least one Container in this Pod
 // * all EvictionRequirements are evaluated to 'true' for at least one Container in this Pod
 func (s *scalingDirectionPodEvictionAdmission) Admit(pod *apiv1.Pod, resources *vpa_types.RecommendedPodResources) bool {
@@ -48,29 +45,26 @@ func (s *scalingDirectionPodEvictionAdmission) Admit(pod *apiv1.Pod, resources *
 	}
 	for _, container := range pod.Spec.Containers {
 		recommendedResources := vpa_utils.GetRecommendationForContainer(container.Name, resources)
-		// if a container doesn't have a recommendation, the VPA has set `.containerPolicy.mode: off` for this container,
-		// so we can skip this container
 		if recommendedResources == nil {
-			continue
+			return true
 		}
-		containerRequests, _ := resourcehelpers.ContainerRequestsAndLimits(container.Name, pod)
-		if s.admitContainer(containerRequests, recommendedResources, podEvictionRequirements) {
+		if s.admitContainer(container, recommendedResources, podEvictionRequirements) {
 			return true
 		}
 	}
 	return false
 }
 
-func (s *scalingDirectionPodEvictionAdmission) admitContainer(containerRequests apiv1.ResourceList, recommendedResources *vpa_types.RecommendedContainerResources, podEvictionRequirements []*vpa_types.EvictionRequirement) bool {
-	_, foundCPURequests := containerRequests[apiv1.ResourceCPU]
+func (s *scalingDirectionPodEvictionAdmission) admitContainer(container apiv1.Container, recommendedResources *vpa_types.RecommendedContainerResources, podEvictionRequirements []*vpa_types.EvictionRequirement) bool {
+	_, foundCPURequests := container.Resources.Requests[apiv1.ResourceCPU]
 	if !foundCPURequests {
 		return true
 	}
-	_, foundMemoryRequests := containerRequests[apiv1.ResourceMemory]
+	_, foundMemoryRequests := container.Resources.Requests[apiv1.ResourceMemory]
 	if !foundMemoryRequests {
 		return true
 	}
-	return s.checkEvictionRequirementsForContainer(containerRequests, recommendedResources.Target, podEvictionRequirements)
+	return s.checkEvictionRequirementsForContainer(container.Resources.Requests, recommendedResources.Target, podEvictionRequirements)
 }
 
 func (s *scalingDirectionPodEvictionAdmission) checkEvictionRequirementsForContainer(requestedResources apiv1.ResourceList, recommendedResources apiv1.ResourceList, evictionRequirements []*vpa_types.EvictionRequirement) bool {
@@ -82,7 +76,7 @@ func (s *scalingDirectionPodEvictionAdmission) checkEvictionRequirementsForConta
 			resultsForResources = append(resultsForResources, s.checkChangeRequirement(currentlyRequestedValue.MilliValue(), recommendedValue.MilliValue(), requirement.ChangeRequirement))
 		}
 		// *All* EvictionRequirements need to be evaluated to `true`, so if there's a single one which evaluates to `false`, we can exit here and don't admit the Container
-		if !slices.Contains(resultsForResources, true) {
+		if !contains(resultsForResources, true) {
 			return false
 		}
 	}
@@ -95,6 +89,15 @@ func (s *scalingDirectionPodEvictionAdmission) checkChangeRequirement(currentReq
 	}
 	if changeRequirement == vpa_types.TargetLowerThanRequests {
 		return recommendation < currentRequests
+	}
+	return false
+}
+
+func contains(results []bool, b bool) bool {
+	for _, result := range results {
+		if result == b {
+			return true
+		}
 	}
 	return false
 }
@@ -115,5 +118,4 @@ func (s *scalingDirectionPodEvictionAdmission) LoopInit(_ []*apiv1.Pod, vpaContr
 }
 
 func (s *scalingDirectionPodEvictionAdmission) CleanUp() {
-	s.EvictionRequirements = make(map[*apiv1.Pod][]*vpa_types.EvictionRequirement)
 }

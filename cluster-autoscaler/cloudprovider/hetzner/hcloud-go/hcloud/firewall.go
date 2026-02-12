@@ -1,13 +1,16 @@
 package hcloud
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"time"
 
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud/exp/ctxutil"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud/schema"
 )
 
@@ -73,9 +76,6 @@ type FirewallResource struct {
 	Type          FirewallResourceType
 	Server        *FirewallResourceServer
 	LabelSelector *FirewallResourceLabelSelector
-	// AppliedToResources is only used if the Type is FirewallResourceTypeLabelSelector.
-	// FirewallResources contained here cannot be of type FirewallResourceTypeLabelSelector.
-	AppliedToResources []FirewallResource
 }
 
 // FirewallResourceServer represents a Server to apply a Firewall on.
@@ -96,33 +96,41 @@ type FirewallClient struct {
 
 // GetByID retrieves a Firewall by its ID. If the Firewall does not exist, nil is returned.
 func (c *FirewallClient) GetByID(ctx context.Context, id int64) (*Firewall, *Response, error) {
-	const opPath = "/firewalls/%d"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
+	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("/firewalls/%d", id), nil)
+	if err != nil {
+		return nil, nil, err
+	}
 
-	reqPath := fmt.Sprintf(opPath, id)
-
-	respBody, resp, err := getRequest[schema.FirewallGetResponse](ctx, c.client, reqPath)
+	var body schema.FirewallGetResponse
+	resp, err := c.client.Do(req, &body)
 	if err != nil {
 		if IsError(err, ErrorCodeNotFound) {
 			return nil, resp, nil
 		}
-		return nil, resp, err
+		return nil, nil, err
 	}
-
-	return FirewallFromSchema(respBody.Firewall), resp, nil
+	return FirewallFromSchema(body.Firewall), resp, nil
 }
 
 // GetByName retrieves a Firewall by its name. If the Firewall does not exist, nil is returned.
 func (c *FirewallClient) GetByName(ctx context.Context, name string) (*Firewall, *Response, error) {
-	return firstByName(name, func() ([]*Firewall, *Response, error) {
-		return c.List(ctx, FirewallListOpts{Name: name})
-	})
+	if name == "" {
+		return nil, nil, nil
+	}
+	firewalls, response, err := c.List(ctx, FirewallListOpts{Name: name})
+	if len(firewalls) == 0 {
+		return nil, response, err
+	}
+	return firewalls[0], response, err
 }
 
 // Get retrieves a Firewall by its ID if the input can be parsed as an integer, otherwise it
 // retrieves a Firewall by its name. If the Firewall does not exist, nil is returned.
 func (c *FirewallClient) Get(ctx context.Context, idOrName string) (*Firewall, *Response, error) {
-	return getByIDOrName(ctx, c.GetByID, c.GetByName, idOrName)
+	if id, err := strconv.ParseInt(idOrName, 10, 64); err == nil {
+		return c.GetByID(ctx, id)
+	}
+	return c.GetByName(ctx, idOrName)
 }
 
 // FirewallListOpts specifies options for listing Firewalls.
@@ -148,17 +156,22 @@ func (l FirewallListOpts) values() url.Values {
 // Please note that filters specified in opts are not taken into account
 // when their value corresponds to their zero value or when they are empty.
 func (c *FirewallClient) List(ctx context.Context, opts FirewallListOpts) ([]*Firewall, *Response, error) {
-	const opPath = "/firewalls?%s"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
-
-	reqPath := fmt.Sprintf(opPath, opts.values().Encode())
-
-	respBody, resp, err := getRequest[schema.FirewallListResponse](ctx, c.client, reqPath)
+	path := "/firewalls?" + opts.values().Encode()
+	req, err := c.client.NewRequest(ctx, "GET", path, nil)
 	if err != nil {
-		return nil, resp, err
+		return nil, nil, err
 	}
 
-	return allFromSchemaFunc(respBody.Firewalls, FirewallFromSchema), resp, nil
+	var body schema.FirewallListResponse
+	resp, err := c.client.Do(req, &body)
+	if err != nil {
+		return nil, nil, err
+	}
+	firewalls := make([]*Firewall, 0, len(body.Firewalls))
+	for _, s := range body.Firewalls {
+		firewalls = append(firewalls, FirewallFromSchema(s))
+	}
+	return firewalls, resp, nil
 }
 
 // All returns all Firewalls.
@@ -168,10 +181,22 @@ func (c *FirewallClient) All(ctx context.Context) ([]*Firewall, error) {
 
 // AllWithOpts returns all Firewalls for the given options.
 func (c *FirewallClient) AllWithOpts(ctx context.Context, opts FirewallListOpts) ([]*Firewall, error) {
-	return iterPages(func(page int) ([]*Firewall, *Response, error) {
+	allFirewalls := []*Firewall{}
+
+	err := c.client.all(func(page int) (*Response, error) {
 		opts.Page = page
-		return c.List(ctx, opts)
+		firewalls, resp, err := c.List(ctx, opts)
+		if err != nil {
+			return resp, err
+		}
+		allFirewalls = append(allFirewalls, firewalls...)
+		return resp, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	return allFirewalls, nil
 }
 
 // FirewallCreateOpts specifies options for creating a new Firewall.
@@ -185,7 +210,7 @@ type FirewallCreateOpts struct {
 // Validate checks if options are valid.
 func (o FirewallCreateOpts) Validate() error {
 	if o.Name == "" {
-		return missingField(o, "Name")
+		return errors.New("missing name")
 	}
 	return nil
 }
@@ -198,27 +223,28 @@ type FirewallCreateResult struct {
 
 // Create creates a new Firewall.
 func (c *FirewallClient) Create(ctx context.Context, opts FirewallCreateOpts) (FirewallCreateResult, *Response, error) {
-	const opPath = "/firewalls"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
-
-	result := FirewallCreateResult{}
-
-	reqPath := opPath
-
 	if err := opts.Validate(); err != nil {
-		return result, nil, err
+		return FirewallCreateResult{}, nil, err
 	}
-
 	reqBody := firewallCreateOptsToSchema(opts)
-
-	respBody, resp, err := postRequest[schema.FirewallCreateResponse](ctx, c.client, reqPath, reqBody)
+	reqBodyData, err := json.Marshal(reqBody)
 	if err != nil {
-		return result, resp, err
+		return FirewallCreateResult{}, nil, err
+	}
+	req, err := c.client.NewRequest(ctx, "POST", "/firewalls", bytes.NewReader(reqBodyData))
+	if err != nil {
+		return FirewallCreateResult{}, nil, err
 	}
 
-	result.Firewall = FirewallFromSchema(respBody.Firewall)
-	result.Actions = ActionsFromSchema(respBody.Actions)
-
+	respBody := schema.FirewallCreateResponse{}
+	resp, err := c.client.Do(req, &respBody)
+	if err != nil {
+		return FirewallCreateResult{}, resp, err
+	}
+	result := FirewallCreateResult{
+		Firewall: FirewallFromSchema(respBody.Firewall),
+		Actions:  ActionsFromSchema(respBody.Actions),
+	}
 	return result, resp, nil
 }
 
@@ -230,11 +256,6 @@ type FirewallUpdateOpts struct {
 
 // Update updates a Firewall.
 func (c *FirewallClient) Update(ctx context.Context, firewall *Firewall, opts FirewallUpdateOpts) (*Firewall, *Response, error) {
-	const opPath = "/firewalls/%d"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
-
-	reqPath := fmt.Sprintf(opPath, firewall.ID)
-
 	reqBody := schema.FirewallUpdateRequest{}
 	if opts.Name != "" {
 		reqBody.Name = &opts.Name
@@ -242,23 +263,32 @@ func (c *FirewallClient) Update(ctx context.Context, firewall *Firewall, opts Fi
 	if opts.Labels != nil {
 		reqBody.Labels = &opts.Labels
 	}
+	reqBodyData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, nil, err
+	}
 
-	respBody, resp, err := putRequest[schema.FirewallUpdateResponse](ctx, c.client, reqPath, reqBody)
+	path := fmt.Sprintf("/firewalls/%d", firewall.ID)
+	req, err := c.client.NewRequest(ctx, "PUT", path, bytes.NewReader(reqBodyData))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	respBody := schema.FirewallUpdateResponse{}
+	resp, err := c.client.Do(req, &respBody)
 	if err != nil {
 		return nil, resp, err
 	}
-
 	return FirewallFromSchema(respBody.Firewall), resp, nil
 }
 
 // Delete deletes a Firewall.
 func (c *FirewallClient) Delete(ctx context.Context, firewall *Firewall) (*Response, error) {
-	const opPath = "/firewalls/%d"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
-
-	reqPath := fmt.Sprintf(opPath, firewall.ID)
-
-	return deleteRequestNoResult(ctx, c.client, reqPath)
+	req, err := c.client.NewRequest(ctx, "DELETE", fmt.Sprintf("/firewalls/%d", firewall.ID), nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.client.Do(req, nil)
 }
 
 // FirewallSetRulesOpts specifies options for setting rules of a Firewall.
@@ -268,59 +298,75 @@ type FirewallSetRulesOpts struct {
 
 // SetRules sets the rules of a Firewall.
 func (c *FirewallClient) SetRules(ctx context.Context, firewall *Firewall, opts FirewallSetRulesOpts) ([]*Action, *Response, error) {
-	const opPath = "/firewalls/%d/actions/set_rules"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
-
-	reqPath := fmt.Sprintf(opPath, firewall.ID)
-
 	reqBody := firewallSetRulesOptsToSchema(opts)
 
-	respBody, resp, err := postRequest[schema.FirewallActionSetRulesResponse](ctx, c.client, reqPath, reqBody)
+	reqBodyData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	path := fmt.Sprintf("/firewalls/%d/actions/set_rules", firewall.ID)
+	req, err := c.client.NewRequest(ctx, "POST", path, bytes.NewReader(reqBodyData))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var respBody schema.FirewallActionSetRulesResponse
+	resp, err := c.client.Do(req, &respBody)
 	if err != nil {
 		return nil, resp, err
 	}
-
 	return ActionsFromSchema(respBody.Actions), resp, nil
 }
 
 func (c *FirewallClient) ApplyResources(ctx context.Context, firewall *Firewall, resources []FirewallResource) ([]*Action, *Response, error) {
-	const opPath = "/firewalls/%d/actions/apply_to_resources"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
-
-	reqPath := fmt.Sprintf(opPath, firewall.ID)
-
 	applyTo := make([]schema.FirewallResource, len(resources))
 	for i, r := range resources {
 		applyTo[i] = firewallResourceToSchema(r)
 	}
 
 	reqBody := schema.FirewallActionApplyToResourcesRequest{ApplyTo: applyTo}
+	reqBodyData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, nil, err
+	}
 
-	respBody, resp, err := postRequest[schema.FirewallActionApplyToResourcesResponse](ctx, c.client, reqPath, reqBody)
+	path := fmt.Sprintf("/firewalls/%d/actions/apply_to_resources", firewall.ID)
+	req, err := c.client.NewRequest(ctx, "POST", path, bytes.NewReader(reqBodyData))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var respBody schema.FirewallActionApplyToResourcesResponse
+	resp, err := c.client.Do(req, &respBody)
 	if err != nil {
 		return nil, resp, err
 	}
-
 	return ActionsFromSchema(respBody.Actions), resp, nil
 }
 
 func (c *FirewallClient) RemoveResources(ctx context.Context, firewall *Firewall, resources []FirewallResource) ([]*Action, *Response, error) {
-	const opPath = "/firewalls/%d/actions/remove_from_resources"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
-
-	reqPath := fmt.Sprintf(opPath, firewall.ID)
-
 	removeFrom := make([]schema.FirewallResource, len(resources))
 	for i, r := range resources {
 		removeFrom[i] = firewallResourceToSchema(r)
 	}
 
 	reqBody := schema.FirewallActionRemoveFromResourcesRequest{RemoveFrom: removeFrom}
+	reqBodyData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, nil, err
+	}
 
-	respBody, resp, err := postRequest[schema.FirewallActionRemoveFromResourcesResponse](ctx, c.client, reqPath, reqBody)
+	path := fmt.Sprintf("/firewalls/%d/actions/remove_from_resources", firewall.ID)
+	req, err := c.client.NewRequest(ctx, "POST", path, bytes.NewReader(reqBodyData))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var respBody schema.FirewallActionRemoveFromResourcesResponse
+	resp, err := c.client.Do(req, &respBody)
 	if err != nil {
 		return nil, resp, err
 	}
-
 	return ActionsFromSchema(respBody.Actions), resp, nil
 }

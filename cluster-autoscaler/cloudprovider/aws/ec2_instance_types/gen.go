@@ -20,16 +20,16 @@ limitations under the License.
 package main
 
 import (
-	"context"
 	"flag"
 	"html/template"
 	"os"
 	"time"
 
-	awssdk "github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws"
 	"k8s.io/klog/v2"
+
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws"
+	awssdk "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/aws"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/aws/session"
 )
 
 var packageTemplate = template.Must(template.New("").Parse(`/*
@@ -83,17 +83,20 @@ var InstanceTypes = map[string]*InstanceType{
 func main() {
 	var region = flag.String("region", "", "aws region you'd like to generate instances from.")
 	flag.Parse()
-	if awssdk.ToString(region) == "" {
+	if awssdk.StringValue(region) == "" {
 		klog.Fatalf("Region is required to generate instance types")
 	}
+
 	defer klog.Flush()
 
-	awsConfig, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(awssdk.ToString(region)))
+	sess, err := session.NewSession(&awssdk.Config{
+		Region: region,
+	})
 	if err != nil {
 		klog.Fatal(err)
 	}
 
-	instanceTypes, err := aws.GenerateEC2InstanceTypes(awsConfig)
+	instanceTypes, err := aws.GenerateEC2InstanceTypes(sess)
 	if err != nil {
 		klog.Fatal(err)
 	}

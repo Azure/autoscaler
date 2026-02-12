@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strconv"
 
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud/exp/ctxutil"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud/schema"
 )
 
@@ -30,27 +29,32 @@ type LoadBalancerTypeClient struct {
 
 // GetByID retrieves a Load Balancer type by its ID. If the Load Balancer type does not exist, nil is returned.
 func (c *LoadBalancerTypeClient) GetByID(ctx context.Context, id int64) (*LoadBalancerType, *Response, error) {
-	const opPath = "/load_balancer_types/%d"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
+	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("/load_balancer_types/%d", id), nil)
+	if err != nil {
+		return nil, nil, err
+	}
 
-	reqPath := fmt.Sprintf(opPath, id)
-
-	respBody, resp, err := getRequest[schema.LoadBalancerTypeGetResponse](ctx, c.client, reqPath)
+	var body schema.LoadBalancerTypeGetResponse
+	resp, err := c.client.Do(req, &body)
 	if err != nil {
 		if IsError(err, ErrorCodeNotFound) {
 			return nil, resp, nil
 		}
-		return nil, resp, err
+		return nil, nil, err
 	}
-
-	return LoadBalancerTypeFromSchema(respBody.LoadBalancerType), resp, nil
+	return LoadBalancerTypeFromSchema(body.LoadBalancerType), resp, nil
 }
 
 // GetByName retrieves a Load Balancer type by its name. If the Load Balancer type does not exist, nil is returned.
 func (c *LoadBalancerTypeClient) GetByName(ctx context.Context, name string) (*LoadBalancerType, *Response, error) {
-	return firstByName(name, func() ([]*LoadBalancerType, *Response, error) {
-		return c.List(ctx, LoadBalancerTypeListOpts{Name: name})
-	})
+	if name == "" {
+		return nil, nil, nil
+	}
+	LoadBalancerTypes, response, err := c.List(ctx, LoadBalancerTypeListOpts{Name: name})
+	if len(LoadBalancerTypes) == 0 {
+		return nil, response, err
+	}
+	return LoadBalancerTypes[0], response, err
 }
 
 // Get retrieves a Load Balancer type by its ID if the input can be parsed as an integer, otherwise it
@@ -85,17 +89,22 @@ func (l LoadBalancerTypeListOpts) values() url.Values {
 // Please note that filters specified in opts are not taken into account
 // when their value corresponds to their zero value or when they are empty.
 func (c *LoadBalancerTypeClient) List(ctx context.Context, opts LoadBalancerTypeListOpts) ([]*LoadBalancerType, *Response, error) {
-	const opPath = "/load_balancer_types?%s"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
-
-	reqPath := fmt.Sprintf(opPath, opts.values().Encode())
-
-	respBody, resp, err := getRequest[schema.LoadBalancerTypeListResponse](ctx, c.client, reqPath)
+	path := "/load_balancer_types?" + opts.values().Encode()
+	req, err := c.client.NewRequest(ctx, "GET", path, nil)
 	if err != nil {
-		return nil, resp, err
+		return nil, nil, err
 	}
 
-	return allFromSchemaFunc(respBody.LoadBalancerTypes, LoadBalancerTypeFromSchema), resp, nil
+	var body schema.LoadBalancerTypeListResponse
+	resp, err := c.client.Do(req, &body)
+	if err != nil {
+		return nil, nil, err
+	}
+	LoadBalancerTypes := make([]*LoadBalancerType, 0, len(body.LoadBalancerTypes))
+	for _, s := range body.LoadBalancerTypes {
+		LoadBalancerTypes = append(LoadBalancerTypes, LoadBalancerTypeFromSchema(s))
+	}
+	return LoadBalancerTypes, resp, nil
 }
 
 // All returns all Load Balancer types.
@@ -105,8 +114,20 @@ func (c *LoadBalancerTypeClient) All(ctx context.Context) ([]*LoadBalancerType, 
 
 // AllWithOpts returns all Load Balancer types for the given options.
 func (c *LoadBalancerTypeClient) AllWithOpts(ctx context.Context, opts LoadBalancerTypeListOpts) ([]*LoadBalancerType, error) {
-	return iterPages(func(page int) ([]*LoadBalancerType, *Response, error) {
+	allLoadBalancerTypes := []*LoadBalancerType{}
+
+	err := c.client.all(func(page int) (*Response, error) {
 		opts.Page = page
-		return c.List(ctx, opts)
+		LoadBalancerTypes, resp, err := c.List(ctx, opts)
+		if err != nil {
+			return resp, err
+		}
+		allLoadBalancerTypes = append(allLoadBalancerTypes, LoadBalancerTypes...)
+		return resp, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	return allLoadBalancerTypes, nil
 }

@@ -1,10 +1,18 @@
 approvers:
-- sig-autoscaling-vpa-approvers
+- kwiesmueller
+- kgolab
+- jbartosik
+- krzysied
+- voelzmo
+- raywainman
 reviewers:
-- sig-autoscaling-vpa-reviewers
+- kwiesmueller
+- kgolab
+- jbartosik
+- krzysied
+- voelzmo
+- raywainman
 emeritus_approvers:
 - schylek # 2022-09-30
-- kgolab # 2025-02-21
-- krzysied # 2025-02-21
 labels:
 - area/vertical-pod-autoscaler

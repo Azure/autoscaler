@@ -21,9 +21,9 @@ import (
 	"net/http"
 	"net/http/pprof"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/klog/v2"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics"
 )
 
@@ -46,7 +46,6 @@ func Initialize(enableProfiling *bool, healthCheck *metrics.HealthCheck, address
 		}
 
 		err := http.ListenAndServe(*address, mux)
-		klog.ErrorS(err, "Failed to start metrics")
-		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+		klog.Fatalf("Failed to start metrics: %v", err)
 	}()
 }

@@ -22,7 +22,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/autoscaler/cluster-autoscaler/simulator/fake"
 )
 
 func TestEnforceInjectedPodsLimitProcessor(t *testing.T) {
@@ -111,7 +110,7 @@ func TestEnforceInjectedPodsLimitProcessor(t *testing.T) {
 func numberOfFakePods(pods []*apiv1.Pod) int {
 	numberOfFakePods := 0
 	for _, pod := range pods {
-		if fake.IsFake(pod) {
+		if IsFake(pod) {
 			numberOfFakePods += 1
 		}
 	}

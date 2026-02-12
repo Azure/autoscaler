@@ -438,39 +438,14 @@ func extractExtendedResourcesFromKubeEnv(kubeEnv KubeEnv) (apiv1.ResourceList, e
 		klog.Warningf("error while obtaining extended_resources from AUTOSCALER_ENV_VARS; %v", err)
 		return nil, err
 	}
-	var extendedResourcesMap map[string]string
-	if found {
-		extendedResourcesMap, err = parseKeyValueListToMap(extendedResourcesAsString)
-		if err != nil {
-			return apiv1.ResourceList{}, err
-		}
-	} else {
-		extendedResourcesMap = make(map[string]string)
-	}
-	nodeLabelsAsString, found, err := extractAutoscalerVarFromKubeEnv(kubeEnv, "node_labels")
-	if err != nil {
-		klog.Warningf("error while obtaining node_labels from AUTOSCALER_ENV_VARS; %v", err)
-		return nil, err
-	}
-	if found {
-		nodeLabelsMap, err := parseKeyValueListToMap(nodeLabelsAsString)
-		if err != nil {
-			return apiv1.ResourceList{}, err
-		}
-		const extendedResourcesKeyPrefix = "clusterautoscaler-nodetemplate-resources."
-		for key, value := range nodeLabelsMap {
-			if strings.HasPrefix(key, extendedResourcesKeyPrefix) {
-				key = strings.TrimPrefix(key, extendedResourcesKeyPrefix)
-				if _, existsBefore := extendedResourcesMap[key]; existsBefore {
-					klog.Warningf("extended resource %s defined twice in template", key)
-				}
-				extendedResourcesMap[key] = value
-			}
-		}
+
+	if !found {
+		return apiv1.ResourceList{}, nil
 	}
 
-	if len(extendedResourcesMap) == 0 {
-		return apiv1.ResourceList{}, nil
+	extendedResourcesMap, err := parseKeyValueListToMap(extendedResourcesAsString)
+	if err != nil {
+		return apiv1.ResourceList{}, err
 	}
 
 	extendedResources := apiv1.ResourceList{}
@@ -478,7 +453,7 @@ func extractExtendedResourcesFromKubeEnv(kubeEnv KubeEnv) (apiv1.ResourceList, e
 		if q, err := resource.ParseQuantity(quantity); err == nil && q.Sign() >= 0 {
 			extendedResources[apiv1.ResourceName(name)] = q
 		} else if err != nil {
-			klog.Warningf("ignoring invalid value in extended_resources or node_labels defined in AUTOSCALER_ENV_VARS; %v", err)
+			klog.Warningf("ignoring invalid value in extended_resources defined in AUTOSCALER_ENV_VARS; %v", err)
 		}
 	}
 	return extendedResources, nil

@@ -17,34 +17,33 @@ limitations under the License.
 package aws
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 
-	"k8s.io/klog/v2"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/aws"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/aws/ec2metadata"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/aws/session"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/aws/aws-sdk-go/service/ec2"
+)
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/ec2"
-	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+var (
+	ec2MetaDataServiceUrl = "http://169.254.169.254"
 )
 
 // GenerateEC2InstanceTypes returns a map of ec2 resources
-func GenerateEC2InstanceTypes(cfg aws.Config) (map[string]*InstanceType, error) {
-	ec2Client := ec2.NewFromConfig(cfg)
+func GenerateEC2InstanceTypes(sess *session.Session) (map[string]*InstanceType, error) {
+	ec2Client := ec2.New(sess)
 	input := ec2.DescribeInstanceTypesInput{}
 	instanceTypes := make(map[string]*InstanceType)
 
-	paginator := ec2.NewDescribeInstanceTypesPaginator(ec2Client, &input)
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(context.Background())
-		if err != nil {
-			return nil, fmt.Errorf("failed to describe instance types: %w", err)
-		}
+	if err := ec2Client.DescribeInstanceTypesPages(&input, func(page *ec2.DescribeInstanceTypesOutput, isLastPage bool) bool {
 		for _, rawInstanceType := range page.InstanceTypes {
-			instanceTypes[string(rawInstanceType.InstanceType)] = transformInstanceType(&rawInstanceType)
+			instanceTypes[*rawInstanceType.InstanceType] = transformInstanceType(rawInstanceType)
 		}
+		return !isLastPage
+	}); err != nil {
+		return nil, err
 	}
 
 	if len(instanceTypes) == 0 {
@@ -59,27 +58,27 @@ func GetStaticEC2InstanceTypes() (map[string]*InstanceType, string) {
 	return InstanceTypes, StaticListLastUpdateTime
 }
 
-func transformInstanceType(rawInstanceType *ec2types.InstanceTypeInfo) *InstanceType {
+func transformInstanceType(rawInstanceType *ec2.InstanceTypeInfo) *InstanceType {
 	instanceType := &InstanceType{
-		InstanceType: string(rawInstanceType.InstanceType),
+		InstanceType: *rawInstanceType.InstanceType,
 	}
 	if rawInstanceType.MemoryInfo != nil && rawInstanceType.MemoryInfo.SizeInMiB != nil {
 		instanceType.MemoryMb = *rawInstanceType.MemoryInfo.SizeInMiB
 	}
 	if rawInstanceType.VCpuInfo != nil && rawInstanceType.VCpuInfo.DefaultVCpus != nil {
-		instanceType.VCPU = int64(*rawInstanceType.VCpuInfo.DefaultVCpus)
+		instanceType.VCPU = *rawInstanceType.VCpuInfo.DefaultVCpus
 	}
 	if rawInstanceType.GpuInfo != nil && len(rawInstanceType.GpuInfo.Gpus) > 0 {
-		instanceType.GPU = int64(getGpuCount(rawInstanceType.GpuInfo))
+		instanceType.GPU = getGpuCount(rawInstanceType.GpuInfo)
 	}
 	if rawInstanceType.ProcessorInfo != nil && len(rawInstanceType.ProcessorInfo.SupportedArchitectures) > 0 {
-		instanceType.Architecture = interpretEc2SupportedArchitecure(string(rawInstanceType.ProcessorInfo.SupportedArchitectures[0]))
+		instanceType.Architecture = interpretEc2SupportedArchitecure(*rawInstanceType.ProcessorInfo.SupportedArchitectures[0])
 	}
 	return instanceType
 }
 
-func getGpuCount(gpuInfo *ec2types.GpuInfo) int32 {
-	var gpuCountSum int32
+func getGpuCount(gpuInfo *ec2.GpuInfo) int64 {
+	var gpuCountSum int64
 	for _, gpu := range gpuInfo.Gpus {
 		if gpu.Count != nil {
 			gpuCountSum += *gpu.Count
@@ -106,15 +105,16 @@ func interpretEc2SupportedArchitecure(archName string) string {
 // GetCurrentAwsRegion return region of current cluster without building awsManager
 func GetCurrentAwsRegion() (string, error) {
 	region, present := os.LookupEnv("AWS_REGION")
+
 	if !present {
-		cfg, err := config.LoadDefaultConfig(context.Background())
+		c := aws.NewConfig().
+			WithEndpoint(ec2MetaDataServiceUrl)
+		sess, err := session.NewSession()
 		if err != nil {
-			klog.Errorf("Unable to load default aws config: %v", err)
+			return "", fmt.Errorf("failed to create session")
 		}
-		region = cfg.Region
+		return ec2metadata.New(sess, c).Region()
 	}
-	if region == "" {
-		return "", errors.New("failed to determine AWS region")
-	}
+
 	return region, nil
 }

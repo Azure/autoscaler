@@ -23,7 +23,7 @@ type VolumeCreateRequest struct {
 	Name      string             `json:"name"`
 	Size      int                `json:"size"`
 	Server    *int64             `json:"server,omitempty"`
-	Location  *IDOrName          `json:"location,omitempty"`
+	Location  interface{}        `json:"location,omitempty"` // int, string, or nil
 	Labels    *map[string]string `json:"labels,omitempty"`
 	Automount *bool              `json:"automount,omitempty"`
 	Format    *string            `json:"format,omitempty"`

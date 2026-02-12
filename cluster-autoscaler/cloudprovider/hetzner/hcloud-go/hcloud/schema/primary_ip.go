@@ -31,18 +31,6 @@ type PrimaryIPDNSPTR struct {
 	IP     string `json:"ip"`
 }
 
-// PrimaryIPCreateOpts defines the request to
-// create a Primary IP.
-type PrimaryIPCreateRequest struct {
-	Name         string             `json:"name"`
-	Type         string             `json:"type"`
-	AssigneeType string             `json:"assignee_type"`
-	AssigneeID   *int64             `json:"assignee_id,omitempty"`
-	Labels       *map[string]string `json:"labels,omitempty"`
-	AutoDelete   *bool              `json:"auto_delete,omitempty"`
-	Datacenter   string             `json:"datacenter,omitempty"`
-}
-
 // PrimaryIPCreateResponse defines the schema of the response
 // when creating a Primary IP.
 type PrimaryIPCreateResponse struct {
@@ -50,27 +38,19 @@ type PrimaryIPCreateResponse struct {
 	Action    *Action   `json:"action"`
 }
 
-// PrimaryIPGetResponse defines the response when retrieving a single Primary IP.
-type PrimaryIPGetResponse struct {
+// PrimaryIPGetResult defines the response when retrieving a single Primary IP.
+type PrimaryIPGetResult struct {
 	PrimaryIP PrimaryIP `json:"primary_ip"`
 }
 
-// PrimaryIPListResponse defines the response when listing Primary IPs.
-type PrimaryIPListResponse struct {
+// PrimaryIPListResult defines the response when listing Primary IPs.
+type PrimaryIPListResult struct {
 	PrimaryIPs []PrimaryIP `json:"primary_ips"`
 }
 
-// PrimaryIPUpdateOpts defines the request to
-// update a Primary IP.
-type PrimaryIPUpdateRequest struct {
-	Name       string             `json:"name,omitempty"`
-	Labels     *map[string]string `json:"labels,omitempty"`
-	AutoDelete *bool              `json:"auto_delete,omitempty"`
-}
-
-// PrimaryIPUpdateResponse defines the response
+// PrimaryIPUpdateResult defines the response
 // when updating a Primary IP.
-type PrimaryIPUpdateResponse struct {
+type PrimaryIPUpdateResult struct {
 	PrimaryIP PrimaryIP `json:"primary_ip"`
 }
 
@@ -79,40 +59,4 @@ type PrimaryIPUpdateResponse struct {
 type PrimaryIPActionChangeDNSPtrRequest struct {
 	IP     string  `json:"ip"`
 	DNSPtr *string `json:"dns_ptr"`
-}
-
-// PrimaryIPActionChangeDNSPtrResponse defines the response when setting a reverse DNS
-// pointer for a IP address.
-type PrimaryIPActionChangeDNSPtrResponse struct {
-	Action Action `json:"action"`
-}
-
-// PrimaryIPActionAssignRequest defines the request to
-// assign a Primary IP to an assignee (usually a server).
-type PrimaryIPActionAssignRequest struct {
-	AssigneeID   int64  `json:"assignee_id"`
-	AssigneeType string `json:"assignee_type"`
-}
-
-// PrimaryIPActionAssignResponse defines the response when assigning a Primary IP to a
-// assignee.
-type PrimaryIPActionAssignResponse struct {
-	Action Action `json:"action"`
-}
-
-// PrimaryIPActionUnassignResponse defines the response to unassign a Primary IP.
-type PrimaryIPActionUnassignResponse struct {
-	Action Action `json:"action"`
-}
-
-// PrimaryIPActionChangeProtectionRequest defines the request to
-// change protection configuration of a Primary IP.
-type PrimaryIPActionChangeProtectionRequest struct {
-	Delete bool `json:"delete"`
-}
-
-// PrimaryIPActionChangeProtectionResponse defines the response when changing the
-// protection of a Primary IP.
-type PrimaryIPActionChangeProtectionResponse struct {
-	Action Action `json:"action"`
 }

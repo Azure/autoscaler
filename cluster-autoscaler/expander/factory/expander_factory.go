@@ -18,7 +18,7 @@ package factory
 
 import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/expander"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/grpcplugin"
 	"k8s.io/autoscaler/cluster-autoscaler/expander/leastnodes"
@@ -58,10 +58,10 @@ func (f *Factory) Build(names []string) (expander.Strategy, errors.AutoscalerErr
 	strategySeen := false
 	for i, name := range names {
 		if _, ok := seenExpanders[name]; ok {
-			return nil, errors.NewAutoscalerErrorf(errors.InternalError, "Expander %s was specified multiple times, each expander must not be specified more than once", name)
+			return nil, errors.NewAutoscalerError(errors.InternalError, "Expander %s was specified multiple times, each expander must not be specified more than once", name)
 		}
 		if strategySeen {
-			return nil, errors.NewAutoscalerErrorf(errors.InternalError, "Expander %s came after an expander %s that will always return only one result, this is not allowed since %s will never be used", name, names[i-1], name)
+			return nil, errors.NewAutoscalerError(errors.InternalError, "Expander %s came after an expander %s that will always return only one result, this is not allowed since %s will never be used", name, names[i-1], name)
 		}
 		seenExpanders[name] = struct{}{}
 
@@ -69,7 +69,7 @@ func (f *Factory) Build(names []string) (expander.Strategy, errors.AutoscalerErr
 		if known {
 			filters = append(filters, create())
 		} else {
-			return nil, errors.NewAutoscalerErrorf(errors.InternalError, "Expander %s not supported", name)
+			return nil, errors.NewAutoscalerError(errors.InternalError, "Expander %s not supported", name)
 		}
 		if _, ok := filters[len(filters)-1].(expander.Strategy); ok {
 			strategySeen = true
@@ -79,7 +79,7 @@ func (f *Factory) Build(names []string) (expander.Strategy, errors.AutoscalerErr
 }
 
 // RegisterDefaultExpanders is a convenience function, registering all known expanders in the Factory.
-func (f *Factory) RegisterDefaultExpanders(cloudProvider cloudprovider.CloudProvider, autoscalingKubeClients *ca_context.AutoscalingKubeClients, kubeClient kube_client.Interface, configNamespace string, GRPCExpanderCert string, GRPCExpanderURL string) {
+func (f *Factory) RegisterDefaultExpanders(cloudProvider cloudprovider.CloudProvider, autoscalingKubeClients *context.AutoscalingKubeClients, kubeClient kube_client.Interface, configNamespace string, GRPCExpanderCert string, GRPCExpanderURL string) {
 	f.RegisterFilter(expander.RandomExpanderName, random.NewFilter)
 	f.RegisterFilter(expander.MostPodsExpanderName, mostpods.NewFilter)
 	f.RegisterFilter(expander.LeastWasteExpanderName, waste.NewFilter)

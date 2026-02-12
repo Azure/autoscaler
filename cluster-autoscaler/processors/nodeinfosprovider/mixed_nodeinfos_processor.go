@@ -24,7 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	caerror "k8s.io/autoscaler/cluster-autoscaler/utils/errors"
@@ -63,8 +63,8 @@ func NewMixedTemplateNodeInfoProvider(t *time.Duration, forceDaemonSets bool) *M
 	}
 }
 
-func (p *MixedTemplateNodeInfoProvider) isCacheItemExpired(now time.Time, added time.Time) bool {
-	return now.Sub(added) > p.ttl
+func (p *MixedTemplateNodeInfoProvider) isCacheItemExpired(added time.Time) bool {
+	return time.Now().Sub(added) > p.ttl
 }
 
 // CleanUp cleans up processor's internal structures.
@@ -72,39 +72,26 @@ func (p *MixedTemplateNodeInfoProvider) CleanUp() {
 }
 
 // Process returns the nodeInfos set for this cluster
-func (p *MixedTemplateNodeInfoProvider) Process(autoscalingCtx *ca_context.AutoscalingContext, nodes []*apiv1.Node, daemonsets []*appsv1.DaemonSet, taintConfig taints.TaintConfig, now time.Time) (map[string]*framework.NodeInfo, caerror.AutoscalerError) {
+func (p *MixedTemplateNodeInfoProvider) Process(ctx *context.AutoscalingContext, nodes []*apiv1.Node, daemonsets []*appsv1.DaemonSet, taintConfig taints.TaintConfig, now time.Time) (map[string]*framework.NodeInfo, caerror.AutoscalerError) {
 	// TODO(mwielgus): This returns map keyed by url, while most code (including scheduler) uses node.Name for a key.
 	// TODO(mwielgus): Review error policy - sometimes we may continue with partial errors.
 	result := make(map[string]*framework.NodeInfo)
 	seenGroups := make(map[string]bool)
 
-	// sort nodes into those good and bad candidates for templates. the bad candidates will be processed
-	// at the end of this function as a last resort for a node info template.
-	goodCandidates := make([]*apiv1.Node, 0)
-	badCandidates := make([]*apiv1.Node, 0)
-	for _, node := range nodes {
-		if isNodeGoodTemplateCandidate(node, now) {
-			goodCandidates = append(goodCandidates, node)
-		} else {
-			badCandidates = append(badCandidates, node)
-		}
-	}
-
 	// processNode returns information whether the nodeTemplate was generated and if there was an error.
 	processNode := func(node *apiv1.Node) (bool, string, caerror.AutoscalerError) {
-		nodeGroup, err := autoscalingCtx.CloudProvider.NodeGroupForNode(node)
+		nodeGroup, err := ctx.CloudProvider.NodeGroupForNode(node)
 		if err != nil {
-			klog.Warningf("Failed to find node group for %s: %v", node.Name, err)
-			return false, "", nil
+			return false, "", caerror.ToAutoscalerError(caerror.CloudProviderError, err)
 		}
 		if nodeGroup == nil || reflect.ValueOf(nodeGroup).IsNil() {
 			return false, "", nil
 		}
 		id := nodeGroup.Id()
 		if _, found := result[id]; !found {
-			nodeInfo, err := autoscalingCtx.ClusterSnapshot.GetNodeInfo(node.Name)
+			nodeInfo, err := ctx.ClusterSnapshot.GetNodeInfo(node.Name)
 			if err != nil {
-				return false, "", caerror.NewAutoscalerErrorf(caerror.InternalError, "error while retrieving node %s from cluster snapshot - this shouldn't happen: %v", node.Name, err)
+				return false, "", caerror.NewAutoscalerError(caerror.InternalError, "error while retrieving node %s from cluster snapshot - this shouldn't happen: %v", node.Name, err)
 			}
 			templateNodeInfo, caErr := simulator.SanitizedTemplateNodeInfoFromNodeInfo(nodeInfo, id, daemonsets, p.forceDaemonSets, taintConfig)
 			if caErr != nil {
@@ -116,17 +103,21 @@ func (p *MixedTemplateNodeInfoProvider) Process(autoscalingCtx *ca_context.Autos
 		return false, "", nil
 	}
 
-	for _, node := range goodCandidates {
+	for _, node := range nodes {
+		// Broken nodes might have some stuff missing. Skipping.
+		if !isNodeGoodTemplateCandidate(node, now) {
+			continue
+		}
 		added, id, typedErr := processNode(node)
 		if typedErr != nil {
 			return map[string]*framework.NodeInfo{}, typedErr
 		}
 		if added && p.nodeInfoCache != nil {
 			nodeInfoCopy := result[id].DeepCopy()
-			p.nodeInfoCache[id] = cacheItem{NodeInfo: nodeInfoCopy, added: now}
+			p.nodeInfoCache[id] = cacheItem{NodeInfo: nodeInfoCopy, added: time.Now()}
 		}
 	}
-	for _, nodeGroup := range autoscalingCtx.CloudProvider.NodeGroups() {
+	for _, nodeGroup := range ctx.CloudProvider.NodeGroups() {
 		id := nodeGroup.Id()
 		seenGroups[id] = true
 		if _, found := result[id]; found {
@@ -136,7 +127,7 @@ func (p *MixedTemplateNodeInfoProvider) Process(autoscalingCtx *ca_context.Autos
 		// No good template, check cache of previously running nodes.
 		if p.nodeInfoCache != nil {
 			if cacheItem, found := p.nodeInfoCache[id]; found {
-				if p.isCacheItemExpired(now, cacheItem.added) {
+				if p.isCacheItemExpired(cacheItem.added) {
 					delete(p.nodeInfoCache, id)
 				} else {
 					result[id] = cacheItem.NodeInfo.DeepCopy()
@@ -149,10 +140,12 @@ func (p *MixedTemplateNodeInfoProvider) Process(autoscalingCtx *ca_context.Autos
 		// working nodes in the node groups. By default CA tries to use a real-world example.
 		nodeInfo, err := simulator.SanitizedTemplateNodeInfoFromNodeGroup(nodeGroup, daemonsets, taintConfig)
 		if err != nil {
-			if !errors.Is(err, cloudprovider.ErrNotImplemented) {
+			if errors.Is(err, cloudprovider.ErrNotImplemented) {
+				continue
+			} else {
 				klog.Errorf("Unable to build proper template node for %s: %v", id, err)
+				return map[string]*framework.NodeInfo{}, caerror.ToAutoscalerError(caerror.CloudProviderError, err)
 			}
-			continue
 		}
 		result[id] = nodeInfo
 	}
@@ -165,17 +158,21 @@ func (p *MixedTemplateNodeInfoProvider) Process(autoscalingCtx *ca_context.Autos
 	}
 
 	// Last resort - unready/unschedulable nodes.
-	for _, node := range badCandidates {
+	for _, node := range nodes {
+		// Allowing broken nodes
+		if isNodeGoodTemplateCandidate(node, now) {
+			continue
+		}
 		added, _, typedErr := processNode(node)
 		if typedErr != nil {
 			return map[string]*framework.NodeInfo{}, typedErr
 		}
+		nodeGroup, err := ctx.CloudProvider.NodeGroupForNode(node)
+		if err != nil {
+			return map[string]*framework.NodeInfo{}, caerror.ToAutoscalerError(
+				caerror.CloudProviderError, err)
+		}
 		if added {
-			nodeGroup, err := autoscalingCtx.CloudProvider.NodeGroupForNode(node)
-			if nodeGroup == nil || err != nil {
-				klog.Warningf("Failed to find node group for %s: %v", node.Name, err)
-				continue
-			}
 			klog.Warningf("Built template for %s based on unready/unschedulable node %s", nodeGroup.Id(), node.Name)
 		}
 	}
@@ -187,12 +184,5 @@ func isNodeGoodTemplateCandidate(node *apiv1.Node, now time.Time) bool {
 	ready, lastTransitionTime, _ := kube_util.GetReadinessState(node)
 	stable := lastTransitionTime.Add(stabilizationDelay).Before(now)
 	schedulable := !node.Spec.Unschedulable
-	toBeDeleted := false
-	for _, taint := range node.Spec.Taints {
-		if taint.Key == taints.ToBeDeletedTaint {
-			toBeDeleted = true
-			break
-		}
-	}
-	return ready && stable && schedulable && !toBeDeleted
+	return ready && stable && schedulable
 }

@@ -34,11 +34,7 @@ import (
 
 func TestDrainable(t *testing.T) {
 	var (
-		testTime                                = time.Date(2020, time.December, 18, 17, 0, 0, 0, time.UTC)
-		bspDisruptionTimeout                    = time.Minute
-		creationTimeBeforeBspDisturptionTimeout = testTime.Add(-bspDisruptionTimeout).Add(-time.Second)
-		creationTimeAfterBspDisturptionTimeout  = testTime.Add(-bspDisruptionTimeout).Add(time.Second)
-
+		testTime = time.Date(2020, time.December, 18, 17, 0, 0, 0, time.UTC)
 		replicas = int32(5)
 
 		rc = apiv1.ReplicationController{
@@ -85,24 +81,6 @@ func TestDrainable(t *testing.T) {
 			},
 			Spec: apiv1.PodSpec{
 				NodeName: "node",
-			},
-		}
-
-		drainableBlockingSystemPod = &apiv1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:              "systemPod",
-				Namespace:         "kube-system",
-				OwnerReferences:   test.GenerateOwnerReferences("rs", "ReplicaSet", "extensions/v1beta1", ""),
-				CreationTimestamp: metav1.Time{Time: creationTimeBeforeBspDisturptionTimeout},
-			},
-		}
-
-		nonDrainableBlockingSystemPod = &apiv1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:              "systemPod",
-				Namespace:         "kube-system",
-				OwnerReferences:   test.GenerateOwnerReferences("rs", "ReplicaSet", "extensions/v1beta1", ""),
-				CreationTimestamp: metav1.Time{Time: creationTimeAfterBspDisturptionTimeout},
 			},
 		}
 
@@ -186,18 +164,6 @@ func TestDrainable(t *testing.T) {
 			wantReason: drain.UnmovableKubeSystemPod,
 			wantError:  true,
 		},
-		"block non-pdb system pod existing for less than BspDisruptionTimeout": {
-			pod:        nonDrainableBlockingSystemPod,
-			rcs:        []*apiv1.ReplicationController{&kubeSystemRc},
-			pdbs:       []*policyv1.PodDisruptionBudget{emptyPDB},
-			wantReason: drain.UnmovableKubeSystemPod,
-			wantError:  true,
-		},
-		"allow non-pdb system pod existing for more than BspDisruptionTimeout": {
-			pod:  drainableBlockingSystemPod,
-			rcs:  []*apiv1.ReplicationController{&kubeSystemRc},
-			pdbs: []*policyv1.PodDisruptionBudget{kubeSystemPDB},
-		},
 	} {
 		t.Run(desc, func(t *testing.T) {
 			tracker := pdb.NewBasicRemainingPdbTracker()
@@ -207,7 +173,7 @@ func TestDrainable(t *testing.T) {
 				RemainingPdbTracker: tracker,
 				Timestamp:           testTime,
 			}
-			status := New(bspDisruptionTimeout).Drainable(drainCtx, test.pod, nil)
+			status := New().Drainable(drainCtx, test.pod, nil)
 			assert.Equal(t, test.wantReason, status.BlockingReason)
 			assert.Equal(t, test.wantError, status.Error != nil)
 		})

@@ -21,13 +21,12 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
-	"k8s.io/autoscaler/cluster-autoscaler/resourcequotas"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	"k8s.io/klog/v2"
 
-	v1 "k8s.io/autoscaler/cluster-autoscaler/apis/provisioningrequest/autoscaling.x-k8s.io/v1"
+	"k8s.io/autoscaler/cluster-autoscaler/apis/provisioningrequest/autoscaling.x-k8s.io/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaleup"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaleup/orchestrator"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
@@ -46,7 +45,7 @@ import (
 // ProvisioningRequest. It's "best effort" as it admits workload immediately
 // after successful request, without waiting to verify that resources started.
 type bestEffortAtomicProvClass struct {
-	autoscalingCtx      *ca_context.AutoscalingContext
+	context             *context.AutoscalingContext
 	client              *provreqclient.ProvisioningRequestClient
 	injector            *scheduling.HintingSimulator
 	scaleUpOrchestrator scaleup.Orchestrator
@@ -60,17 +59,16 @@ func New(
 }
 
 func (o *bestEffortAtomicProvClass) Initialize(
-	autoscalingCtx *ca_context.AutoscalingContext,
+	autoscalingContext *context.AutoscalingContext,
 	processors *ca_processors.AutoscalingProcessors,
 	clusterStateRegistry *clusterstate.ClusterStateRegistry,
 	estimatorBuilder estimator.EstimatorBuilder,
 	taintConfig taints.TaintConfig,
 	injector *scheduling.HintingSimulator,
-	quotasTrackerFactory *resourcequotas.TrackerFactory,
 ) {
-	o.autoscalingCtx = autoscalingCtx
+	o.context = autoscalingContext
 	o.injector = injector
-	o.scaleUpOrchestrator.Initialize(autoscalingCtx, processors, clusterStateRegistry, estimatorBuilder, taintConfig, quotasTrackerFactory)
+	o.scaleUpOrchestrator.Initialize(autoscalingContext, processors, clusterStateRegistry, estimatorBuilder, taintConfig)
 }
 
 // Provision returns success if there is, or has just been requested, sufficient capacity in the cluster for pods from ProvisioningRequest.
@@ -84,15 +82,15 @@ func (o *bestEffortAtomicProvClass) Provision(
 		return &status.ScaleUpStatus{Result: status.ScaleUpNotTried}, nil
 	}
 	prs := provreqclient.ProvisioningRequestsForPods(o.client, unschedulablePods)
-	prs = provreqclient.FilterOutProvisioningClass(prs, v1.ProvisioningClassBestEffortAtomicScaleUp, "")
+	prs = provreqclient.FilterOutProvisioningClass(prs, v1.ProvisioningClassBestEffortAtomicScaleUp)
 	if len(prs) == 0 {
 		return &status.ScaleUpStatus{Result: status.ScaleUpNotTried}, nil
 	}
 	// Pick 1 ProvisioningRequest.
 	pr := prs[0]
 
-	o.autoscalingCtx.ClusterSnapshot.Fork()
-	defer o.autoscalingCtx.ClusterSnapshot.Revert()
+	o.context.ClusterSnapshot.Fork()
+	defer o.context.ClusterSnapshot.Revert()
 
 	// For provisioning requests, unschedulablePods are actually all injected pods. Some may even be schedulable!
 	actuallyUnschedulablePods, err := o.filterOutSchedulable(unschedulablePods)
@@ -101,7 +99,7 @@ func (o *bestEffortAtomicProvClass) Provision(
 		if _, updateErr := o.client.UpdateProvisioningRequest(pr.ProvisioningRequest); updateErr != nil {
 			klog.Errorf("failed to add Provisioned=false condition to ProvReq %s/%s, err: %v", pr.Namespace, pr.Name, updateErr)
 		}
-		return status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.NewAutoscalerErrorf(errors.InternalError, "error during ScaleUp: %s", err.Error()))
+		return status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.NewAutoscalerError(errors.InternalError, "error during ScaleUp: %s", err.Error()))
 	}
 
 	if len(actuallyUnschedulablePods) == 0 {
@@ -109,7 +107,7 @@ func (o *bestEffortAtomicProvClass) Provision(
 		conditions.AddOrUpdateCondition(pr, v1.Provisioned, metav1.ConditionTrue, conditions.CapacityIsFoundReason, conditions.CapacityIsFoundMsg, metav1.Now())
 		if _, updateErr := o.client.UpdateProvisioningRequest(pr.ProvisioningRequest); updateErr != nil {
 			klog.Errorf("failed to add Provisioned=true condition to ProvReq %s/%s, err: %v", pr.Namespace, pr.Name, updateErr)
-			return status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.NewAutoscalerErrorf(errors.InternalError, "capacity available, but failed to admit workload: %s", updateErr.Error()))
+			return status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.NewAutoscalerError(errors.InternalError, "capacity available, but failed to admit workload: %s", updateErr.Error()))
 		}
 		return &status.ScaleUpStatus{Result: status.ScaleUpNotNeeded}, nil
 	}
@@ -120,7 +118,7 @@ func (o *bestEffortAtomicProvClass) Provision(
 		conditions.AddOrUpdateCondition(pr, v1.Provisioned, metav1.ConditionTrue, conditions.CapacityIsProvisionedReason, conditions.CapacityIsProvisionedMsg, metav1.Now())
 		if _, updateErr := o.client.UpdateProvisioningRequest(pr.ProvisioningRequest); updateErr != nil {
 			klog.Errorf("failed to add Provisioned=true condition to ProvReq %s/%s, err: %v", pr.Namespace, pr.Name, updateErr)
-			return st, errors.NewAutoscalerErrorf(errors.InternalError, "scale up requested, but failed to admit workload: %s", updateErr.Error())
+			return st, errors.NewAutoscalerError(errors.InternalError, "scale up requested, but failed to admit workload: %s", updateErr.Error())
 		}
 		return st, nil
 	}
@@ -131,13 +129,13 @@ func (o *bestEffortAtomicProvClass) Provision(
 		klog.Errorf("failed to add Provisioned=false condition to ProvReq %s/%s, err: %v", pr.Namespace, pr.Name, updateErr)
 	}
 	if err != nil {
-		return status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.NewAutoscalerErrorf(errors.InternalError, "error during ScaleUp: %s", err.Error()))
+		return status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.NewAutoscalerError(errors.InternalError, "error during ScaleUp: %s", err.Error()))
 	}
 	return st, nil
 }
 
 func (o *bestEffortAtomicProvClass) filterOutSchedulable(pods []*apiv1.Pod) ([]*apiv1.Pod, error) {
-	statuses, _, err := o.injector.TrySchedulePods(o.autoscalingCtx.ClusterSnapshot, pods, scheduling.ScheduleAnywhere, false)
+	statuses, _, err := o.injector.TrySchedulePods(o.context.ClusterSnapshot, pods, scheduling.ScheduleAnywhere, false)
 	if err != nil {
 		return nil, err
 	}

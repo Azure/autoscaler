@@ -22,11 +22,10 @@ import (
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog/v2"
-
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
-	resourcehelpers "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/resources"
+	"k8s.io/client-go/tools/cache"
+
+	"k8s.io/klog/v2"
 )
 
 // OomInfo contains data of the OOM event occurrence
@@ -91,7 +90,7 @@ func parseEvictionEvent(event *apiv1.Event) []OomInfo {
 			continue
 		}
 		oomInfo := OomInfo{
-			Timestamp: event.CreationTimestamp.UTC(),
+			Timestamp: event.CreationTimestamp.Time.UTC(),
 			Memory:    model.ResourceAmount(memory.Value()),
 			ContainerID: model.ContainerID{
 				PodID: model.PodID{
@@ -133,11 +132,11 @@ func findSpec(name string, containers []apiv1.Container) *apiv1.Container {
 }
 
 // OnAdd is Noop
-func (o *observer) OnAdd(obj any, isInInitialList bool) {}
+func (o *observer) OnAdd(obj interface{}, isInInitialList bool) {}
 
 // OnUpdate inspects if the update contains oom information and
 // passess it to the ObservedOomsChannel
-func (o *observer) OnUpdate(oldObj, newObj any) {
+func (o *observer) OnUpdate(oldObj, newObj interface{}) {
 	oldPod, ok := oldObj.(*apiv1.Pod)
 	if !ok {
 		klog.ErrorS(nil, "OOM observer received invalid oldObj", "oldObj", oldObj)
@@ -151,22 +150,19 @@ func (o *observer) OnUpdate(oldObj, newObj any) {
 		if containerStatus.RestartCount > 0 &&
 			containerStatus.LastTerminationState.Terminated != nil &&
 			containerStatus.LastTerminationState.Terminated.Reason == "OOMKilled" {
+
 			oldStatus := findStatus(containerStatus.Name, oldPod.Status.ContainerStatuses)
 			if oldStatus != nil && containerStatus.RestartCount > oldStatus.RestartCount {
 				oldSpec := findSpec(containerStatus.Name, oldPod.Spec.Containers)
 				if oldSpec != nil {
-					requests, _ := resourcehelpers.ContainerRequestsAndLimits(containerStatus.Name, oldPod)
-					var memory resource.Quantity
-					if requests != nil {
-						memory = requests[apiv1.ResourceMemory]
-					}
+					memory := oldSpec.Resources.Requests[apiv1.ResourceMemory]
 					oomInfo := OomInfo{
-						Timestamp: containerStatus.LastTerminationState.Terminated.FinishedAt.UTC(),
+						Timestamp: containerStatus.LastTerminationState.Terminated.FinishedAt.Time.UTC(),
 						Memory:    model.ResourceAmount(memory.Value()),
 						ContainerID: model.ContainerID{
 							PodID: model.PodID{
-								Namespace: newPod.Namespace,
-								PodName:   newPod.Name,
+								Namespace: newPod.ObjectMeta.Namespace,
+								PodName:   newPod.ObjectMeta.Name,
 							},
 							ContainerName: containerStatus.Name,
 						},
@@ -179,4 +175,4 @@ func (o *observer) OnUpdate(oldObj, newObj any) {
 }
 
 // OnDelete is Noop
-func (*observer) OnDelete(obj any) {}
+func (*observer) OnDelete(obj interface{}) {}

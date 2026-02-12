@@ -18,7 +18,6 @@ package pod
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 
@@ -27,7 +26,6 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-
 	resource_admission "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource/pod/patch"
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
@@ -53,10 +51,6 @@ func (m *fakeVpaMatcher) GetMatchingVPA(_ context.Context, _ *apiv1.Pod) *vpa_ty
 type fakePatchCalculator struct {
 	patches []resource_admission.PatchRecord
 	err     error
-}
-
-func (*fakePatchCalculator) PatchResourceTarget() patch.PatchResourceTarget {
-	return patch.Pod
 }
 
 func (c *fakePatchCalculator) CalculatePatches(_ *apiv1.Pod, _ *vpa_types.VerticalPodAutoscaler) (
@@ -92,15 +86,15 @@ func TestGetPatches(t *testing.T) {
 			namespace:            "default",
 			vpa:                  testVpa,
 			podPreProcessorError: nil,
-			expectError:          errors.New("unexpected end of JSON input"),
+			expectError:          fmt.Errorf("unexpected end of JSON input"),
 		},
 		{
 			name:                 "invalid pod",
 			podJson:              []byte("{}"),
 			namespace:            "default",
 			vpa:                  testVpa,
-			podPreProcessorError: errors.New("bad pod"),
-			expectError:          errors.New("bad pod"),
+			podPreProcessorError: fmt.Errorf("bad pod"),
+			expectError:          fmt.Errorf("bad pod"),
 		},
 		{
 			name:                 "no vpa found",
@@ -117,10 +111,10 @@ func TestGetPatches(t *testing.T) {
 			namespace: "test",
 			vpa:       testVpa,
 			calculators: []patch.Calculator{&fakePatchCalculator{
-				[]resource_admission.PatchRecord{}, errors.New("Can't calculate this"),
+				[]resource_admission.PatchRecord{}, fmt.Errorf("Can't calculate this"),
 			}},
 			podPreProcessorError: nil,
-			expectError:          errors.New("Can't calculate this"),
+			expectError:          fmt.Errorf("Can't calculate this"),
 			expectPatches:        []resource_admission.PatchRecord{},
 		},
 		{
@@ -133,10 +127,10 @@ func TestGetPatches(t *testing.T) {
 					testPatchRecord,
 				}, nil},
 				&fakePatchCalculator{
-					[]resource_admission.PatchRecord{}, errors.New("Can't calculate this"),
+					[]resource_admission.PatchRecord{}, fmt.Errorf("Can't calculate this"),
 				}},
 			podPreProcessorError: nil,
-			expectError:          errors.New("Can't calculate this"),
+			expectError:          fmt.Errorf("Can't calculate this"),
 			expectPatches:        []resource_admission.PatchRecord{},
 		},
 		{

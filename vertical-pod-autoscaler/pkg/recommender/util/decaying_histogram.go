@@ -22,7 +22,6 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 )
 
@@ -87,7 +86,7 @@ func (h *decayingHistogram) Merge(other Histogram) {
 
 func (h *decayingHistogram) Equals(other Histogram) bool {
 	h2, typesMatch := (other).(*decayingHistogram)
-	return typesMatch && h.halfLife == h2.halfLife && h.referenceTimestamp.Equal(h2.referenceTimestamp) && h.histogram.Equals(&h2.histogram)
+	return typesMatch && h.halfLife == h2.halfLife && h.referenceTimestamp == h2.referenceTimestamp && h.histogram.Equals(&h2.histogram)
 }
 
 func (h *decayingHistogram) IsEmpty() bool {
@@ -102,7 +101,7 @@ func (h *decayingHistogram) shiftReferenceTimestamp(newreferenceTimestamp time.T
 	// Make sure the decay start is an integer multiple of halfLife.
 	newreferenceTimestamp = newreferenceTimestamp.Round(h.halfLife)
 	exponent := round(float64(h.referenceTimestamp.Sub(newreferenceTimestamp)) / float64(h.halfLife))
-	h.scale(math.Ldexp(1., exponent)) // Scale all weights by 2^exponent.
+	h.histogram.scale(math.Ldexp(1., exponent)) // Scale all weights by 2^exponent.
 	h.referenceTimestamp = newreferenceTimestamp
 }
 

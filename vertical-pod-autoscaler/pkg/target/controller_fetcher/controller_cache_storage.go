@@ -139,7 +139,7 @@ func (cc *controllerCacheStorage) RemoveExpired() {
 	removed := 0
 	for k, v := range cc.cache {
 		if now.After(v.deleteAfter) {
-			removed++
+			removed += 1
 			delete(cc.cache, k)
 		}
 	}

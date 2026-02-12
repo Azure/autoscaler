@@ -25,7 +25,7 @@ import (
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	cp_test "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 
@@ -101,31 +101,16 @@ func TestEventingScaleUpStatusProcessor(t *testing.T) {
 			expectedTriggered:   0,
 			expectedNoTriggered: 0,
 		},
-		{
-			caseName: "No scale up; max total nodes in cluster reached",
-			state: &ScaleUpStatus{
-				Result:               ScaleUpLimitedByMaxNodesTotal,
-				ScaleUpInfos:         []nodegroupset.ScaleUpInfo{{}},
-				PodsTriggeredScaleUp: []*apiv1.Pod{},
-				PodsRemainUnschedulable: []NoScaleUpInfo{
-					{Pod: p1},
-					{Pod: p2},
-					{Pod: p3},
-				},
-			},
-			expectedTriggered:   0,
-			expectedNoTriggered: 3,
-		},
 	}
 
 	for _, tc := range testCases {
 		fakeRecorder := kube_record.NewFakeRecorder(5)
-		autoscalingCtx := &ca_context.AutoscalingContext{
-			AutoscalingKubeClients: ca_context.AutoscalingKubeClients{
+		context := &context.AutoscalingContext{
+			AutoscalingKubeClients: context.AutoscalingKubeClients{
 				Recorder: fakeRecorder,
 			},
 		}
-		p.Process(autoscalingCtx, tc.state)
+		p.Process(context, tc.state)
 		triggered := 0
 		noTriggered := 0
 		for eventsLeft := true; eventsLeft; {
@@ -181,18 +166,9 @@ func TestReasonsMessage(t *testing.T) {
 		"2 max limit reached",
 		"1 not ready",
 	}
-	result := ReasonsMessage(ScaleUpNoOptionsAvailable, NoScaleUpInfo{nil, rejected, skipped}, considered)
+	result := ReasonsMessage(NoScaleUpInfo{nil, rejected, skipped}, considered)
 
 	for _, part := range expected {
 		assert.Contains(t, result, part)
 	}
-}
-
-func TestReasonsMessageWhenScaleUpLimitedByMaxNodesTotal(t *testing.T) {
-	considered := map[string]cloudprovider.NodeGroup{}
-	noScaleUpInfo := NoScaleUpInfo{
-		Pod: nil,
-	}
-	result := ReasonsMessage(ScaleUpLimitedByMaxNodesTotal, noScaleUpInfo, considered)
-	assert.Contains(t, result, "max total nodes in cluster reached")
 }

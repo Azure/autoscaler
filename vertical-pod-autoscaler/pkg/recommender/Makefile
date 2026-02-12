@@ -1,7 +1,7 @@
 all: build
 
 TAG?=dev
-REGISTRY?=gcr.io/k8s-staging-autoscaling
+REGISTRY?=staging-k8s.gcr.io
 FLAGS=
 TEST_ENVVAR=LD_FLAGS=-s GO111MODULE=on
 ENVVAR=CGO_ENABLED=0 $(TEST_ENVVAR)
@@ -11,7 +11,6 @@ FULL_COMPONENT=vpa-${COMPONENT}
 # localhost registries need --insecure for some docker commands.
 INSECURE=$(subst localhost,--insecure,$(findstring localhost,$(REGISTRY)))
 
-BUILD_LD_FLAGS?=-s
 ALL_ARCHITECTURES?=amd64 arm arm64 ppc64le s390x
 export DOCKER_CLI_EXPERIMENTAL=enabled
 
@@ -38,7 +37,7 @@ ifndef TAG
 	ERR = $(error TAG is undefined)
 	$(ERR)
 endif
-	docker buildx build --pull --load --platform linux/$* --build-arg BUILD_LD_FLAGS="${BUILD_LD_FLAGS}" -t ${REGISTRY}/${FULL_COMPONENT}-$*:${TAG} -f ./Dockerfile ../../
+	docker buildx build --pull --load --platform linux/$* -t ${REGISTRY}/${FULL_COMPONENT}-$*:${TAG} -f ./Dockerfile ../../
 
 .PHONY: docker-push
 docker-push: $(addprefix do-push-,$(ALL_ARCHITECTURES)) push-multi-arch;
@@ -78,7 +77,7 @@ remove-buildx-builder:
 	docker buildx rm ${BUILDER}
 
 .PHONY: release
-release: create-buildx-builder docker-build remove-buildx-builder docker-push
+release: show-git-info create-buildx-builder docker-build remove-buildx-builder docker-push
 	@echo "Full in-docker release ${FULL_COMPONENT}:${TAG} completed"
 
 clean: $(addprefix clean-,$(ALL_ARCHITECTURES))
@@ -91,4 +90,3 @@ format:
 	test -z "$$(find . -path ./vendor -prune -type f -o -name '*.go' -exec gofmt -s -w {} + | tee /dev/stderr)"
 
 .PHONY: all build test-unit clean format release
-

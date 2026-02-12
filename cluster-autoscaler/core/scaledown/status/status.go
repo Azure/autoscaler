@@ -98,8 +98,6 @@ const (
 	ScaleDownInCooldown
 	// ScaleDownInProgress - the scale down wasn't attempted, because a previous scale-down was still in progress.
 	ScaleDownInProgress
-	// ScaleDownNoCandidates - the scale down was skipped because of no scale down candidates.
-	ScaleDownNoCandidates
 )
 
 // NodeDeleteResultType denotes the type of the result of node deletion. It provides deeper

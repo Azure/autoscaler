@@ -20,10 +20,9 @@ import (
 	"sort"
 
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
-
-	podutils "k8s.io/autoscaler/cluster-autoscaler/utils/pod"
 )
 
 // podScoreInfo contains Pod and score that corresponds to how important it is to handle the pod first.
@@ -69,16 +68,23 @@ func (d *DecreasingPodOrderer) calculatePodScore(podsEquivalentGroup PodEquivale
 		}
 	}
 
-	podRequests := podutils.PodRequests(samplePod)
-	podCPU := podRequests[apiv1.ResourceCPU]
-	podMemory := podRequests[apiv1.ResourceMemory]
+	cpuSum := resource.Quantity{}
+	memorySum := resource.Quantity{}
 
+	for _, container := range samplePod.Spec.Containers {
+		if request, ok := container.Resources.Requests[apiv1.ResourceCPU]; ok {
+			cpuSum.Add(request)
+		}
+		if request, ok := container.Resources.Requests[apiv1.ResourceMemory]; ok {
+			memorySum.Add(request)
+		}
+	}
 	score := float64(0)
 	if cpuAllocatable, ok := nodeTemplate.Node().Status.Allocatable[apiv1.ResourceCPU]; ok && cpuAllocatable.MilliValue() > 0 {
-		score += float64(podCPU.MilliValue()) / float64(cpuAllocatable.MilliValue())
+		score += float64(cpuSum.MilliValue()) / float64(cpuAllocatable.MilliValue())
 	}
 	if memAllocatable, ok := nodeTemplate.Node().Status.Allocatable[apiv1.ResourceMemory]; ok && memAllocatable.Value() > 0 {
-		score += float64(podMemory.Value()) / float64(memAllocatable.Value())
+		score += float64(memorySum.Value()) / float64(memAllocatable.Value())
 	}
 
 	return &podScoreInfo{

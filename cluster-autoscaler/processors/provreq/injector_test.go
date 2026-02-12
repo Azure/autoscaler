@@ -24,7 +24,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/autoscaler/cluster-autoscaler/apis/provisioningrequest/autoscaling.x-k8s.io/v1"
-	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest"
 	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest/provreqclient"
 	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest/provreqwrapper"
 	clock "k8s.io/utils/clock/testing"
@@ -70,11 +69,6 @@ func TestProvisioningRequestPodsInjector(t *testing.T) {
 	podsA := 10
 	newProvReqA := testProvisioningRequestWithCondition("new", podsA, v1.ProvisioningClassCheckCapacity)
 	newAcceptedProvReqA := testProvisioningRequestWithCondition("new-accepted", podsA, v1.ProvisioningClassCheckCapacity, accepted)
-	newProvReqAWithInstance := testProvisioningRequestWithCondition("new-instance", podsA, v1.ProvisioningClassCheckCapacity)
-	newProvReqAWithInstance.Spec.Parameters = map[string]v1.Parameter{
-		provisioningrequest.CheckCapacityProcessorInstanceKey: "test-instance",
-	}
-	newProvReqAPrefixed := testProvisioningRequestWithCondition("new-prefixed", podsA, "test-prefix.check-capacity.autoscaling.x-k8s.io")
 
 	podsB := 20
 	notProvisionedAcceptedProvReqB := testProvisioningRequestWithCondition("provisioned-false-B", podsB, v1.ProvisioningClassBestEffortAtomicScaleUp, notProvisioned, accepted)
@@ -88,8 +82,6 @@ func TestProvisioningRequestPodsInjector(t *testing.T) {
 		name                             string
 		provReqs                         []*provreqwrapper.ProvisioningRequest
 		existingUnsUnschedulablePodCount int
-		checkCapacityBatchProcessing     bool
-		checkCapacityProcessorInstance   string
 		wantUnscheduledPodCount          int
 		wantUpdatedConditionName         string
 	}{
@@ -100,45 +92,10 @@ func TestProvisioningRequestPodsInjector(t *testing.T) {
 			wantUpdatedConditionName: newProvReqA.Name,
 		},
 		{
-			name:                         "New check capacity ProvisioningRequest with batch processing, pods are injected and Accepted condition is not added",
-			provReqs:                     []*provreqwrapper.ProvisioningRequest{newProvReqA, provisionedAcceptedProvReqB},
-			checkCapacityBatchProcessing: true,
-			wantUnscheduledPodCount:      podsA,
-			wantUpdatedConditionName:     newProvReqA.Name,
-		},
-		{
 			name:                     "New ProvisioningRequest, pods are injected and Accepted condition is updated",
 			provReqs:                 []*provreqwrapper.ProvisioningRequest{newAcceptedProvReqA, provisionedAcceptedProvReqB},
 			wantUnscheduledPodCount:  podsA,
 			wantUpdatedConditionName: newAcceptedProvReqA.Name,
-		},
-		{
-			name:     "New ProvisioningRequest with not matching custom prefix, no pods are injected",
-			provReqs: []*provreqwrapper.ProvisioningRequest{newProvReqAPrefixed},
-		},
-		{
-			name:                           "New ProvisioningRequest with not matching processor instance, no pods are injected",
-			provReqs:                       []*provreqwrapper.ProvisioningRequest{newProvReqA, provisionedAcceptedProvReqB},
-			checkCapacityProcessorInstance: "test-instance",
-		},
-		{
-			name:                           "New check capacity ProvisioningRequest with matching processor instance, pods are injected and Accepted condition is added",
-			provReqs:                       []*provreqwrapper.ProvisioningRequest{newProvReqAWithInstance, provisionedAcceptedProvReqB},
-			checkCapacityProcessorInstance: "test-instance",
-			wantUnscheduledPodCount:        podsA,
-			wantUpdatedConditionName:       newProvReqAWithInstance.Name,
-		},
-		{
-			name:                           "New ProvisioningRequest with not matching prefix, no pods are injected",
-			provReqs:                       []*provreqwrapper.ProvisioningRequest{newProvReqA, provisionedAcceptedProvReqB},
-			checkCapacityProcessorInstance: "test-prefix.",
-		},
-		{
-			name:                           "New check capacity ProvisioningRequest with matching prefix, pods are injected and Accepted condition is added",
-			provReqs:                       []*provreqwrapper.ProvisioningRequest{newProvReqAPrefixed, provisionedAcceptedProvReqB},
-			checkCapacityProcessorInstance: "test-prefix.",
-			wantUnscheduledPodCount:        podsA,
-			wantUpdatedConditionName:       newProvReqAPrefixed.Name,
 		},
 		{
 			name:                     "Provisioned=False, pods are injected",
@@ -174,7 +131,7 @@ func TestProvisioningRequestPodsInjector(t *testing.T) {
 		client := provreqclient.NewFakeProvisioningRequestClient(context.Background(), t, tc.provReqs...)
 		backoffTime := lru.New(100)
 		backoffTime.Add(key(notProvisionedRecentlyProvReqB), 2*time.Minute)
-		injector := ProvisioningRequestPodsInjector{1 * time.Minute, 10 * time.Minute, backoffTime, clock.NewFakePassiveClock(now), client, now, tc.checkCapacityBatchProcessing, tc.checkCapacityProcessorInstance}
+		injector := ProvisioningRequestPodsInjector{1 * time.Minute, 10 * time.Minute, backoffTime, clock.NewFakePassiveClock(now), client, now}
 		getUnscheduledPods, err := injector.Process(nil, provreqwrapper.BuildTestPods("ns", "pod", tc.existingUnsUnschedulablePodCount))
 		if err != nil {
 			t.Errorf("%s failed: injector.Process return error %v", tc.name, err)
@@ -187,14 +144,8 @@ func TestProvisioningRequestPodsInjector(t *testing.T) {
 		}
 		pr, _ := client.ProvisioningRequestNoCache("ns", tc.wantUpdatedConditionName)
 		accepted := apimeta.FindStatusCondition(pr.Status.Conditions, v1.Accepted)
-		if tc.checkCapacityBatchProcessing {
-			if accepted != nil {
-				t.Errorf("%s: injector.Process updated accepted condition for ProvisioningRequest %s, but shouldn't for batch processing", tc.name, tc.wantUpdatedConditionName)
-			}
-		} else {
-			if accepted == nil || accepted.LastTransitionTime != metav1.NewTime(now) {
-				t.Errorf("%s: injector.Process hasn't update accepted condition for ProvisioningRequest %s", tc.name, tc.wantUpdatedConditionName)
-			}
+		if accepted == nil || accepted.LastTransitionTime != metav1.NewTime(now) {
+			t.Errorf("%s: injector.Process hasn't update accepted condition for ProvisioningRequest %s", tc.name, tc.wantUpdatedConditionName)
 		}
 	}
 

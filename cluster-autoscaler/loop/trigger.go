@@ -139,7 +139,7 @@ func (t *LoopTrigger) logTriggerReason(message string) {
 	case <-t.podObserver.unschedulablePodChan:
 		klog.Info("Autoscaler loop triggered by unschedulable pod appearing")
 	default:
-		klog.Info(message)
+		klog.Infof(message)
 	}
 }
 

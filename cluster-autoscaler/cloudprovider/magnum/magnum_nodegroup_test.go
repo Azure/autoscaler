@@ -93,7 +93,6 @@ func createTestNodeGroup(manager magnumManager) *magnumNodeGroup {
 		maxSize:           10,
 		targetSize:        1,
 		deletedNodes:      make(map[string]time.Time),
-		nodeTemplate:      &MagnumNodeTemplate{},
 	}
 	return &ng
 }

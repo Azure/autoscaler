@@ -62,7 +62,10 @@ func TestScaleDownEarlierThan(t *testing.T) {
 		SkipNodesWithLocalStorage:         true,
 		SkipNodesWithCustomControllerPods: true,
 	}
-	p := NewEmptySortingProcessor(&niGetter, deleteOptions, nil)
+	p := EmptySorting{
+		nodeInfoGetter: &niGetter,
+		deleteOptions:  deleteOptions,
+	}
 
 	tests := []struct {
 		name        string

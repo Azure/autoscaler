@@ -21,15 +21,14 @@ import (
 
 	v1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/admission"
 )
 
 // PatchRecord represents a single patch for modifying a resource.
 type PatchRecord struct {
-	Op    string `json:"op,inline"`
-	Path  string `json:"path,inline"`
-	Value any    `json:"value"`
+	Op    string      `json:"op,inline"`
+	Path  string      `json:"path,inline"`
+	Value interface{} `json:"value"`
 }
 
 // Handler represents a handler for a resource in Admission Server

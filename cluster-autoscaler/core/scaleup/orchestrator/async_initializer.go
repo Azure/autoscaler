@@ -21,12 +21,10 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
-	"k8s.io/autoscaler/cluster-autoscaler/expander"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroups"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
@@ -43,37 +41,34 @@ type AsyncNodeGroupInitializer struct {
 	mutex                  sync.Mutex
 	allTargetSizes         map[string]int64
 	nodeGroup              cloudprovider.NodeGroup
-	triggeringPods         []*apiv1.Pod
 	nodeInfo               *framework.NodeInfo
 	scaleUpExecutor        *scaleUpExecutor
 	taintConfig            taints.TaintConfig
 	daemonSets             []*appsv1.DaemonSet
 	scaleUpStatusProcessor status.ScaleUpStatusProcessor
-	autoscalingCtx         *ca_context.AutoscalingContext
+	context                *context.AutoscalingContext
 	atomicScaleUp          bool
 }
 
-// NewAsyncNodeGroupInitializer creates a new AsyncNodeGroupInitializer instance.
-func NewAsyncNodeGroupInitializer(
-	option *expander.Option,
+func newAsyncNodeGroupInitializer(
+	nodeGroup cloudprovider.NodeGroup,
 	nodeInfo *framework.NodeInfo,
 	scaleUpExecutor *scaleUpExecutor,
 	taintConfig taints.TaintConfig,
 	daemonSets []*appsv1.DaemonSet,
 	scaleUpStatusProcessor status.ScaleUpStatusProcessor,
-	autoscalingCtx *ca_context.AutoscalingContext,
+	context *context.AutoscalingContext,
 	atomicScaleUp bool,
 ) *AsyncNodeGroupInitializer {
 	return &AsyncNodeGroupInitializer{
 		allTargetSizes:         map[string]int64{},
-		nodeGroup:              option.NodeGroup,
-		triggeringPods:         option.Pods,
+		nodeGroup:              nodeGroup,
 		nodeInfo:               nodeInfo,
 		scaleUpExecutor:        scaleUpExecutor,
 		taintConfig:            taintConfig,
 		daemonSets:             daemonSets,
 		scaleUpStatusProcessor: scaleUpStatusProcessor,
-		autoscalingCtx:         autoscalingCtx,
+		context:                context,
 		atomicScaleUp:          atomicScaleUp,
 	}
 }
@@ -108,7 +103,8 @@ func (s *AsyncNodeGroupInitializer) ChangeTargetSize(nodeGroup string, delta int
 func (s *AsyncNodeGroupInitializer) InitializeNodeGroup(result nodegroups.AsyncNodeGroupCreationResult) {
 	if result.Error != nil {
 		klog.Errorf("Async node group creation failed. Async scale-up is cancelled. %v", result.Error)
-		s.emitScaleUpStatus(&status.ScaleUpStatus{}, errors.ToAutoscalerError(errors.InternalError, result.Error))
+		scaleUpStatus, _ := status.UpdateScaleUpError(&status.ScaleUpStatus{}, errors.ToAutoscalerError(errors.InternalError, result.Error))
+		s.scaleUpStatusProcessor.Process(s.context, scaleUpStatus)
 		return
 	}
 	mainCreatedNodeGroup := result.CreationResult.MainCreatedNodeGroup
@@ -147,25 +143,7 @@ func (s *AsyncNodeGroupInitializer) InitializeNodeGroup(result nodegroups.AsyncN
 			failedNodeGroupIds = append(failedNodeGroupIds, failedNodeGroup.Id())
 		}
 		klog.Errorf("Async scale-up for asynchronously created node group failed: %v (node groups: %v)", err, failedNodeGroupIds)
-		s.emitScaleUpStatus(&status.ScaleUpStatus{
-			CreateNodeGroupResults: []nodegroups.CreateNodeGroupResult{result.CreationResult},
-			FailedResizeNodeGroups: failedNodeGroups,
-			PodsTriggeredScaleUp:   s.triggeringPods,
-		}, err)
 		return
 	}
 	klog.Infof("Initial scale-up succeeded. Scale ups: %v", scaleUpInfos)
-	s.emitScaleUpStatus(&status.ScaleUpStatus{
-		Result:                 status.ScaleUpSuccessful,
-		ScaleUpInfos:           scaleUpInfos,
-		CreateNodeGroupResults: []nodegroups.CreateNodeGroupResult{result.CreationResult},
-		PodsTriggeredScaleUp:   s.triggeringPods,
-	}, nil)
-}
-
-func (s *AsyncNodeGroupInitializer) emitScaleUpStatus(scaleUpStatus *status.ScaleUpStatus, err errors.AutoscalerError) {
-	if err != nil {
-		status.UpdateScaleUpError(scaleUpStatus, err)
-	}
-	s.scaleUpStatusProcessor.Process(s.autoscalingCtx, scaleUpStatus)
 }

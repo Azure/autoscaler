@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strconv"
 
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud/exp/ctxutil"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud/schema"
 )
 
@@ -29,27 +28,32 @@ type LocationClient struct {
 
 // GetByID retrieves a location by its ID. If the location does not exist, nil is returned.
 func (c *LocationClient) GetByID(ctx context.Context, id int64) (*Location, *Response, error) {
-	const opPath = "/locations/%d"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
+	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("/locations/%d", id), nil)
+	if err != nil {
+		return nil, nil, err
+	}
 
-	reqPath := fmt.Sprintf(opPath, id)
-
-	respBody, resp, err := getRequest[schema.LocationGetResponse](ctx, c.client, reqPath)
+	var body schema.LocationGetResponse
+	resp, err := c.client.Do(req, &body)
 	if err != nil {
 		if IsError(err, ErrorCodeNotFound) {
 			return nil, resp, nil
 		}
 		return nil, resp, err
 	}
-
-	return LocationFromSchema(respBody.Location), resp, nil
+	return LocationFromSchema(body.Location), resp, nil
 }
 
 // GetByName retrieves an location by its name. If the location does not exist, nil is returned.
 func (c *LocationClient) GetByName(ctx context.Context, name string) (*Location, *Response, error) {
-	return firstByName(name, func() ([]*Location, *Response, error) {
-		return c.List(ctx, LocationListOpts{Name: name})
-	})
+	if name == "" {
+		return nil, nil, nil
+	}
+	locations, response, err := c.List(ctx, LocationListOpts{Name: name})
+	if len(locations) == 0 {
+		return nil, response, err
+	}
+	return locations[0], response, err
 }
 
 // Get retrieves a location by its ID if the input can be parsed as an integer, otherwise it
@@ -84,17 +88,22 @@ func (l LocationListOpts) values() url.Values {
 // Please note that filters specified in opts are not taken into account
 // when their value corresponds to their zero value or when they are empty.
 func (c *LocationClient) List(ctx context.Context, opts LocationListOpts) ([]*Location, *Response, error) {
-	const opPath = "/locations?%s"
-	ctx = ctxutil.SetOpPath(ctx, opPath)
-
-	reqPath := fmt.Sprintf(opPath, opts.values().Encode())
-
-	respBody, resp, err := getRequest[schema.LocationListResponse](ctx, c.client, reqPath)
+	path := "/locations?" + opts.values().Encode()
+	req, err := c.client.NewRequest(ctx, "GET", path, nil)
 	if err != nil {
-		return nil, resp, err
+		return nil, nil, err
 	}
 
-	return allFromSchemaFunc(respBody.Locations, LocationFromSchema), resp, nil
+	var body schema.LocationListResponse
+	resp, err := c.client.Do(req, &body)
+	if err != nil {
+		return nil, nil, err
+	}
+	locations := make([]*Location, 0, len(body.Locations))
+	for _, i := range body.Locations {
+		locations = append(locations, LocationFromSchema(i))
+	}
+	return locations, resp, nil
 }
 
 // All returns all locations.
@@ -104,8 +113,20 @@ func (c *LocationClient) All(ctx context.Context) ([]*Location, error) {
 
 // AllWithOpts returns all locations for the given options.
 func (c *LocationClient) AllWithOpts(ctx context.Context, opts LocationListOpts) ([]*Location, error) {
-	return iterPages(func(page int) ([]*Location, *Response, error) {
+	allLocations := []*Location{}
+
+	err := c.client.all(func(page int) (*Response, error) {
 		opts.Page = page
-		return c.List(ctx, opts)
+		locations, resp, err := c.List(ctx, opts)
+		if err != nil {
+			return resp, err
+		}
+		allLocations = append(allLocations, locations...)
+		return resp, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	return allLocations, nil
 }

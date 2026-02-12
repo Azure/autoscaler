@@ -18,7 +18,6 @@ package target
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -30,8 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/client-go/discovery"
-	cacheddiscovery "k8s.io/client-go/discovery/cached/memory"
+	cacheddiscovery "k8s.io/client-go/discovery/cached"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	kube_client "k8s.io/client-go/kubernetes"
@@ -40,8 +40,6 @@ import (
 	"k8s.io/client-go/scale"
 	"k8s.io/client-go/tools/cache"
 	klog "k8s.io/klog/v2"
-
-	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 )
 
 const (
@@ -71,8 +69,7 @@ const (
 func NewVpaTargetSelectorFetcher(config *rest.Config, kubeClient kube_client.Interface, factory informers.SharedInformerFactory) VpaTargetSelectorFetcher {
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
-		klog.ErrorS(err, "Could not create discoveryClient")
-		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+		klog.Fatalf("Could not create discoveryClient: %v", err)
 	}
 	resolver := scale.NewDiscoveryScaleKindResolver(discoveryClient)
 	restClient := kubeClient.CoreV1().RESTClient()
@@ -90,6 +87,17 @@ func NewVpaTargetSelectorFetcher(config *rest.Config, kubeClient kube_client.Int
 		replicationController: factory.Core().V1().ReplicationControllers().Informer(),
 		job:                   factory.Batch().V1().Jobs().Informer(),
 		cronJob:               factory.Batch().V1().CronJobs().Informer(),
+	}
+
+	for kind, informer := range informersMap {
+		stopCh := make(chan struct{})
+		go informer.Run(stopCh)
+		synced := cache.WaitForCacheSync(stopCh, informer.HasSynced)
+		if !synced {
+			klog.Fatalf("Could not sync cache for %s: %v", kind, err)
+		} else {
+			klog.InfoS("Initial sync completed", "kind", kind)
+		}
 	}
 
 	scaleNamespacer := scale.New(restClient, mapper, dynamic.LegacyAPIPathResolverFunc, resolver)
@@ -110,7 +118,7 @@ type vpaTargetSelectorFetcher struct {
 
 func (f *vpaTargetSelectorFetcher) Fetch(ctx context.Context, vpa *vpa_types.VerticalPodAutoscaler) (labels.Selector, error) {
 	if vpa.Spec.TargetRef == nil {
-		return nil, errors.New("targetRef not defined. If this is a v1beta1 object, switch to v1")
+		return nil, fmt.Errorf("targetRef not defined. If this is a v1beta1 object, switch to v1.")
 	}
 	kind := wellKnownController(vpa.Spec.TargetRef.Kind)
 	informer, exists := f.informersMap[kind]
@@ -131,7 +139,7 @@ func (f *vpaTargetSelectorFetcher) Fetch(ctx context.Context, vpa *vpa_types.Ver
 
 	selector, err := f.getLabelSelectorFromResource(ctx, groupKind, vpa.Namespace, vpa.Spec.TargetRef.Name)
 	if err != nil {
-		return nil, fmt.Errorf("unhandled targetRef %s / %s / %s, last error %v",
+		return nil, fmt.Errorf("Unhandled targetRef %s / %s / %s, last error %v",
 			vpa.Spec.TargetRef.APIVersion, vpa.Spec.TargetRef.Kind, vpa.Spec.TargetRef.Name, err)
 	}
 	return selector, nil
@@ -161,7 +169,7 @@ func getLabelSelector(informer cache.SharedIndexInformer, kind, namespace, name 
 	case (*corev1.ReplicationController):
 		return metav1.LabelSelectorAsSelector(metav1.SetAsLabelSelector(apiObj.Spec.Selector))
 	}
-	return nil, errors.New("don't know how to read label selector")
+	return nil, fmt.Errorf("don't know how to read label selector")
 }
 
 func (f *vpaTargetSelectorFetcher) getLabelSelectorFromResource(
@@ -178,7 +186,7 @@ func (f *vpaTargetSelectorFetcher) getLabelSelectorFromResource(
 		scale, err := f.scaleNamespacer.Scales(namespace).Get(ctx, groupResource, name, metav1.GetOptions{})
 		if err == nil {
 			if scale.Status.Selector == "" {
-				return nil, fmt.Errorf("resource %s/%s has an empty selector for scale sub-resource", namespace, name)
+				return nil, fmt.Errorf("Resource %s/%s has an empty selector for scale sub-resource", namespace, name)
 			}
 			selector, err := labels.Parse(scale.Status.Selector)
 			if err != nil {

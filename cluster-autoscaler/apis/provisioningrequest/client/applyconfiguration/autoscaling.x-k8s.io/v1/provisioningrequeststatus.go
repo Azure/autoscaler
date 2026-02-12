@@ -20,21 +20,13 @@ package v1
 
 import (
 	autoscalingxk8siov1 "k8s.io/autoscaler/cluster-autoscaler/apis/provisioningrequest/autoscaling.x-k8s.io/v1"
-	metav1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
 // ProvisioningRequestStatusApplyConfiguration represents a declarative configuration of the ProvisioningRequestStatus type for use
 // with apply.
-//
-// ProvisioningRequestStatus represents the status of the resource reservation.
 type ProvisioningRequestStatusApplyConfiguration struct {
-	// Conditions represent the observations of a Provisioning Request's
-	// current state. Those will contain information whether the capacity
-	// was found/created or if there were any issues. The condition types
-	// may differ between different provisioning classes.
-	Conditions []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
-	// ProvisioningClassDetails contains all other values custom provisioning classes may
-	// want to pass to end users.
+	Conditions               []v1.ConditionApplyConfiguration      `json:"conditions,omitempty"`
 	ProvisioningClassDetails map[string]autoscalingxk8siov1.Detail `json:"provisioningClassDetails,omitempty"`
 }
 
@@ -47,7 +39,7 @@ func ProvisioningRequestStatus() *ProvisioningRequestStatusApplyConfiguration {
 // WithConditions adds the given value to the Conditions field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, values provided by each call will be appended to the Conditions field.
-func (b *ProvisioningRequestStatusApplyConfiguration) WithConditions(values ...*metav1.ConditionApplyConfiguration) *ProvisioningRequestStatusApplyConfiguration {
+func (b *ProvisioningRequestStatusApplyConfiguration) WithConditions(values ...*v1.ConditionApplyConfiguration) *ProvisioningRequestStatusApplyConfiguration {
 	for i := range values {
 		if values[i] == nil {
 			panic("nil value passed to WithConditions")

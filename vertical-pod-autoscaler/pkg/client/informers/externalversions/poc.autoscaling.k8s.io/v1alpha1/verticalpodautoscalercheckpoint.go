@@ -19,16 +19,16 @@ limitations under the License.
 package v1alpha1
 
 import (
-	context "context"
+	"context"
 	time "time"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
-	apispocautoscalingk8siov1alpha1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/poc.autoscaling.k8s.io/v1alpha1"
+	pocautoscalingk8siov1alpha1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/poc.autoscaling.k8s.io/v1alpha1"
 	versioned "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned"
 	internalinterfaces "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/informers/externalversions/internalinterfaces"
-	pocautoscalingk8siov1alpha1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/listers/poc.autoscaling.k8s.io/v1alpha1"
+	v1alpha1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/listers/poc.autoscaling.k8s.io/v1alpha1"
 	cache "k8s.io/client-go/tools/cache"
 )
 
@@ -36,7 +36,7 @@ import (
 // VerticalPodAutoscalerCheckpoints.
 type VerticalPodAutoscalerCheckpointInformer interface {
 	Informer() cache.SharedIndexInformer
-	Lister() pocautoscalingk8siov1alpha1.VerticalPodAutoscalerCheckpointLister
+	Lister() v1alpha1.VerticalPodAutoscalerCheckpointLister
 }
 
 type verticalPodAutoscalerCheckpointInformer struct {
@@ -57,33 +57,21 @@ func NewVerticalPodAutoscalerCheckpointInformer(client versioned.Interface, name
 // one. This reduces memory footprint and number of connections to the server.
 func NewFilteredVerticalPodAutoscalerCheckpointInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
 	return cache.NewSharedIndexInformer(
-		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
+		&cache.ListWatch{
 			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.PocV1alpha1().VerticalPodAutoscalerCheckpoints(namespace).List(context.Background(), options)
+				return client.PocV1alpha1().VerticalPodAutoscalerCheckpoints(namespace).List(context.TODO(), options)
 			},
 			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.PocV1alpha1().VerticalPodAutoscalerCheckpoints(namespace).Watch(context.Background(), options)
+				return client.PocV1alpha1().VerticalPodAutoscalerCheckpoints(namespace).Watch(context.TODO(), options)
 			},
-			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
-				if tweakListOptions != nil {
-					tweakListOptions(&options)
-				}
-				return client.PocV1alpha1().VerticalPodAutoscalerCheckpoints(namespace).List(ctx, options)
-			},
-			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
-				if tweakListOptions != nil {
-					tweakListOptions(&options)
-				}
-				return client.PocV1alpha1().VerticalPodAutoscalerCheckpoints(namespace).Watch(ctx, options)
-			},
-		}, client),
-		&apispocautoscalingk8siov1alpha1.VerticalPodAutoscalerCheckpoint{},
+		},
+		&pocautoscalingk8siov1alpha1.VerticalPodAutoscalerCheckpoint{},
 		resyncPeriod,
 		indexers,
 	)
@@ -94,9 +82,9 @@ func (f *verticalPodAutoscalerCheckpointInformer) defaultInformer(client version
 }
 
 func (f *verticalPodAutoscalerCheckpointInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&apispocautoscalingk8siov1alpha1.VerticalPodAutoscalerCheckpoint{}, f.defaultInformer)
+	return f.factory.InformerFor(&pocautoscalingk8siov1alpha1.VerticalPodAutoscalerCheckpoint{}, f.defaultInformer)
 }
 
-func (f *verticalPodAutoscalerCheckpointInformer) Lister() pocautoscalingk8siov1alpha1.VerticalPodAutoscalerCheckpointLister {
-	return pocautoscalingk8siov1alpha1.NewVerticalPodAutoscalerCheckpointLister(f.Informer().GetIndexer())
+func (f *verticalPodAutoscalerCheckpointInformer) Lister() v1alpha1.VerticalPodAutoscalerCheckpointLister {
+	return v1alpha1.NewVerticalPodAutoscalerCheckpointLister(f.Informer().GetIndexer())
 }

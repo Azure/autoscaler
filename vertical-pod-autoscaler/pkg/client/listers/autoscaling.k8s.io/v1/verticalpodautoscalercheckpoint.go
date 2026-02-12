@@ -19,10 +19,10 @@ limitations under the License.
 package v1
 
 import (
-	labels "k8s.io/apimachinery/pkg/labels"
-	autoscalingk8siov1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
-	listers "k8s.io/client-go/listers"
-	cache "k8s.io/client-go/tools/cache"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/labels"
+	v1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 // VerticalPodAutoscalerCheckpointLister helps list VerticalPodAutoscalerCheckpoints.
@@ -30,7 +30,7 @@ import (
 type VerticalPodAutoscalerCheckpointLister interface {
 	// List lists all VerticalPodAutoscalerCheckpoints in the indexer.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*autoscalingk8siov1.VerticalPodAutoscalerCheckpoint, err error)
+	List(selector labels.Selector) (ret []*v1.VerticalPodAutoscalerCheckpoint, err error)
 	// VerticalPodAutoscalerCheckpoints returns an object that can list and get VerticalPodAutoscalerCheckpoints.
 	VerticalPodAutoscalerCheckpoints(namespace string) VerticalPodAutoscalerCheckpointNamespaceLister
 	VerticalPodAutoscalerCheckpointListerExpansion
@@ -38,17 +38,25 @@ type VerticalPodAutoscalerCheckpointLister interface {
 
 // verticalPodAutoscalerCheckpointLister implements the VerticalPodAutoscalerCheckpointLister interface.
 type verticalPodAutoscalerCheckpointLister struct {
-	listers.ResourceIndexer[*autoscalingk8siov1.VerticalPodAutoscalerCheckpoint]
+	indexer cache.Indexer
 }
 
 // NewVerticalPodAutoscalerCheckpointLister returns a new VerticalPodAutoscalerCheckpointLister.
 func NewVerticalPodAutoscalerCheckpointLister(indexer cache.Indexer) VerticalPodAutoscalerCheckpointLister {
-	return &verticalPodAutoscalerCheckpointLister{listers.New[*autoscalingk8siov1.VerticalPodAutoscalerCheckpoint](indexer, autoscalingk8siov1.Resource("verticalpodautoscalercheckpoint"))}
+	return &verticalPodAutoscalerCheckpointLister{indexer: indexer}
+}
+
+// List lists all VerticalPodAutoscalerCheckpoints in the indexer.
+func (s *verticalPodAutoscalerCheckpointLister) List(selector labels.Selector) (ret []*v1.VerticalPodAutoscalerCheckpoint, err error) {
+	err = cache.ListAll(s.indexer, selector, func(m interface{}) {
+		ret = append(ret, m.(*v1.VerticalPodAutoscalerCheckpoint))
+	})
+	return ret, err
 }
 
 // VerticalPodAutoscalerCheckpoints returns an object that can list and get VerticalPodAutoscalerCheckpoints.
 func (s *verticalPodAutoscalerCheckpointLister) VerticalPodAutoscalerCheckpoints(namespace string) VerticalPodAutoscalerCheckpointNamespaceLister {
-	return verticalPodAutoscalerCheckpointNamespaceLister{listers.NewNamespaced[*autoscalingk8siov1.VerticalPodAutoscalerCheckpoint](s.ResourceIndexer, namespace)}
+	return verticalPodAutoscalerCheckpointNamespaceLister{indexer: s.indexer, namespace: namespace}
 }
 
 // VerticalPodAutoscalerCheckpointNamespaceLister helps list and get VerticalPodAutoscalerCheckpoints.
@@ -56,15 +64,36 @@ func (s *verticalPodAutoscalerCheckpointLister) VerticalPodAutoscalerCheckpoints
 type VerticalPodAutoscalerCheckpointNamespaceLister interface {
 	// List lists all VerticalPodAutoscalerCheckpoints in the indexer for a given namespace.
 	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*autoscalingk8siov1.VerticalPodAutoscalerCheckpoint, err error)
+	List(selector labels.Selector) (ret []*v1.VerticalPodAutoscalerCheckpoint, err error)
 	// Get retrieves the VerticalPodAutoscalerCheckpoint from the indexer for a given namespace and name.
 	// Objects returned here must be treated as read-only.
-	Get(name string) (*autoscalingk8siov1.VerticalPodAutoscalerCheckpoint, error)
+	Get(name string) (*v1.VerticalPodAutoscalerCheckpoint, error)
 	VerticalPodAutoscalerCheckpointNamespaceListerExpansion
 }
 
 // verticalPodAutoscalerCheckpointNamespaceLister implements the VerticalPodAutoscalerCheckpointNamespaceLister
 // interface.
 type verticalPodAutoscalerCheckpointNamespaceLister struct {
-	listers.ResourceIndexer[*autoscalingk8siov1.VerticalPodAutoscalerCheckpoint]
+	indexer   cache.Indexer
+	namespace string
+}
+
+// List lists all VerticalPodAutoscalerCheckpoints in the indexer for a given namespace.
+func (s verticalPodAutoscalerCheckpointNamespaceLister) List(selector labels.Selector) (ret []*v1.VerticalPodAutoscalerCheckpoint, err error) {
+	err = cache.ListAllByNamespace(s.indexer, s.namespace, selector, func(m interface{}) {
+		ret = append(ret, m.(*v1.VerticalPodAutoscalerCheckpoint))
+	})
+	return ret, err
+}
+
+// Get retrieves the VerticalPodAutoscalerCheckpoint from the indexer for a given namespace and name.
+func (s verticalPodAutoscalerCheckpointNamespaceLister) Get(name string) (*v1.VerticalPodAutoscalerCheckpoint, error) {
+	obj, exists, err := s.indexer.GetByKey(s.namespace + "/" + name)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, errors.NewNotFound(v1.Resource("verticalpodautoscalercheckpoint"), name)
+	}
+	return obj.(*v1.VerticalPodAutoscalerCheckpoint), nil
 }

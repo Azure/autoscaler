@@ -20,11 +20,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
-	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
+	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/estimator"
 	ca_processors "k8s.io/autoscaler/cluster-autoscaler/processors"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
-	"k8s.io/autoscaler/cluster-autoscaler/resourcequotas"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/taints"
@@ -35,12 +34,11 @@ import (
 type Orchestrator interface {
 	// Initialize initializes the orchestrator object with required fields.
 	Initialize(
-		autoscalingCtx *ca_context.AutoscalingContext,
+		autoscalingContext *context.AutoscalingContext,
 		processors *ca_processors.AutoscalingProcessors,
 		clusterStateRegistry *clusterstate.ClusterStateRegistry,
 		estimatorBuilder estimator.EstimatorBuilder,
 		taintConfig taints.TaintConfig,
-		quotasTrackerFactory *resourcequotas.TrackerFactory,
 	)
 	// ScaleUp tries to scale the cluster up. Returns appropriate status or error if
 	// an unexpected error occurred. Assumes that all nodes in the cluster are ready
