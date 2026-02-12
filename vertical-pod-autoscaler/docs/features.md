@@ -2,8 +2,21 @@
 
 ## Contents
 
+<!-- toc -->
 - [Limits control](#limits-control)
 - [Memory Value Humanization](#memory-value-humanization)
+- [CPU Recommendation Rounding](#cpu-recommendation-rounding)
+- [Memory Recommendation Rounding](#memory-recommendation-rounding)
+- [In-Place Updates (<code>InPlaceOrRecreate</code>)](#in-place-updates-inplaceorrecreate)
+  - [Usage](#usage)
+  - [Behavior](#behavior)
+  - [Skipping Disruption Budget for Non-Disruptive Updates](#skipping-disruption-budget-for-non-disruptive-updates)
+    - [When Disruption Budgets Are Still Respected](#when-disruption-budgets-are-still-respected)
+  - [Requirements:](#requirements)
+  - [Limitations](#limitations)
+  - [Fallback Behavior](#fallback-behavior)
+  - [Monitoring](#monitoring)
+<!-- /toc -->
 
 ## Limits control
 
@@ -20,6 +33,13 @@ To disable getting VPA recommendations for an individual container, set `mode` t
 
 ## Memory Value Humanization
 
+> [!WARNING]
+> DEPRECATED: This feature is deprecated as of VPA v1.5.0 and will be removed in a future version. Use `--round-memory-bytes` instead for memory recommendation formatting.
+
+> [!NOTE]
+> This feature was added in v1.3.0.
+
+
 VPA can present memory recommendations in human-readable binary units (KiB, MiB, GiB, TiB) instead of raw bytes, making resource recommendations easier to understand. This feature is controlled by the `--humanize-memory` flag in the recommender component.
 
 When enabled, memory values in recommendations will be:
@@ -35,3 +55,118 @@ To enable this feature, set the `--humanize-memory` flag to true when running th
 ```bash
 --humanize-memory=true
 ```
+
+## CPU Recommendation Rounding
+
+VPA can provide CPU recommendations rounded up to user-specified values, making it easier to interpret and configure resources. This feature is controlled by the `--round-cpu-millicores` flag in the recommender component.
+
+When enabled, CPU recommendations will be:
+- Rounded up to the nearest multiple of the specified millicore value
+- Applied to target, lower bound, and upper bound recommendations
+
+For example, with `--round-cpu-millicores=50`, a CPU recommendation of `79m` would be rounded up to `100m`, and a recommendation of `34m` would be rounded up to `50m`.
+
+To enable this feature, set the --round-cpu-millicores flag when running the VPA recommender:
+
+```bash
+--round-cpu-millicores=50
+```
+
+## Memory Recommendation Rounding
+
+VPA can provide Memory recommendations rounded up to user-specified values, making it easier to interpret and configure resources. This feature is controlled by the `--round-memory-bytes` flag in the recommender component.
+
+When enabled, Memory recommendations will be:
+- Rounded up to the nearest multiple of the specified bytes value
+- Applied to target, lower bound, and upper bound recommendations
+
+For example, with `--round-memory-bytes=134217728`, a memory recommendation of `200Mi` would be rounded up to `256Mi`, and a recommendation of `80Mi` would be rounded up to `128Mi`.
+
+To enable this feature, set the `--round-memory-bytes` flag when running the VPA recommender:
+
+```bash
+--round-memory-bytes=134217728
+```
+
+## In-Place Updates (`InPlaceOrRecreate`)
+
+> [!NOTE]
+> FEATURE STATE:
+> - VPA v1.4.0 [alpha]
+> - VPA v1.5.0 [beta]
+> - VPA v1.6.0 [ga]
+
+VPA supports in-place updates to reduce disruption when applying resource recommendations. This feature leverages Kubernetes' in-place update capabilities (which is in beta as of Kubernetes 1.33) to modify container resources without requiring pod recreation.
+For more information, see [AEP-4016: Support for in place updates in VPA](https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler/enhancements/4016-in-place-updates-support)
+
+### Usage
+
+To use in-place updates, set the VPA's `updateMode` to `InPlaceOrRecreate`:
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: my-vpa
+spec:
+  updatePolicy:
+    updateMode: "InPlaceOrRecreate"
+```
+
+### Behavior
+
+When using `InPlaceOrRecreate` mode, VPA will first attempt to apply updates in-place, if in-place update fails, VPA will fall back to pod recreation.
+Updates are attempted when:
+* Container requests are outside the recommended bounds
+* Quick OOM occurs
+* For long-running pods (>12h), when recommendations differ significantly (>10%)
+
+Important Notes
+
+* Disruption Possibility: While in-place updates aim to minimize disruption, they cannot guarantee zero disruption as the container runtime is responsible for the actual resize operation.
+
+* Memory Limit Downscaling: In the beta version, memory limit downscaling is not supported for pods with resizePolicy: PreferNoRestart. In such cases, VPA will fall back to pod recreation.
+
+### Skipping Disruption Budget for Non-Disruptive Updates
+
+By default, VPA respects disruption budgets (eviction tolerance, min replicas) even for in-place updates. However, when an in-place update doesn't require container restarts, it's truly non-disruptive and these checks may be unnecessarily restrictive.
+
+The `--in-place-skip-disruption-budget` flag (default: `false`) allows VPA to skip disruption budget checks for in-place updates when all containers in the pod have `NotRequired` resize policy for both CPU and memory or no resize policy is defined.
+
+#### When Disruption Budgets Are Still Respected
+
+Even with this flag enabled, disruption budgets are enforced when:
+* Any container has `RestartContainer` resize policy for any resource
+* The update would result in pod eviction/recreation (fallback scenarios)
+
+
+### Requirements:
+
+* Kubernetes 1.33+ with `InPlacePodVerticalScaling` feature gate enabled
+* VPA version 1.4.0+ with `InPlaceOrRecreate` feature gate enabled
+
+### Limitations
+
+* All containers in a pod are updated together (partial updates not supported)
+* Memory downscaling requires careful consideration to prevent OOMs
+* Updates still respect VPA's standard update conditions and timing restrictions
+* In-place updates will fail if they would result in a change to the pod's QoS class
+
+### Fallback Behavior
+
+VPA will fall back to pod recreation in the following scenarios:
+
+* In-place update is [infeasible](https://github.com/kubernetes/enhancements/blob/master/keps/sig-node/1287-in-place-update-pod-resources/README.md#resize-status) (node resources, etc.)
+* Update is [deferred](https://github.com/kubernetes/enhancements/blob/master/keps/sig-node/1287-in-place-update-pod-resources/README.md#resize-status) for more than 5 minutes
+* Update is in progress for more than 1 hour
+* [Pod QoS](https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/) class would change due to the update
+* Memory limit downscaling is required with [PreferNoRestart policy](https://github.com/kubernetes/enhancements/blob/master/keps/sig-node/1287-in-place-update-pod-resources/README.md#container-resize-policy)
+
+### Monitoring
+
+VPA provides metrics to track in-place update operations:
+
+* `vpa_updater_in_place_updatable_pods_total`: Number of pods matching in-place update criteria
+* `vpa_updater_in_place_updated_pods_total`: Number of pods successfully updated in-place
+* `vpa_updater_vpas_with_in_place_updatable_pods_total`: Number of VPAs with pods eligible for in-place updates
+* `vpa_updater_vpas_with_in_place_updated_pods_total`: Number of VPAs with successfully in-place updated pods
+* `vpa_updater_failed_in_place_update_attempts_total`: Number of failed attempts to update pods in-place.

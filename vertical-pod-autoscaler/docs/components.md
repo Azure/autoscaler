@@ -2,17 +2,18 @@
 
 ## Contents
 
-- [Components](#components)
-  - [Introduction](#introduction)
-  - [Recommender](#recommender)
-    - [Running](#running-the-recommender)
-    - [Implementation](#implementation-of-the-recommender)
-  - [Updater](#updater)
-    - [Current implementation](#current-implementation)
-    - [Missing Parts](#missing-parts)
-  - [Admission Controller](#admission-controller)
-    - [Running](#running-the-admission-controller)
-    - [Implementation](#implementation-of-the-admission-controller)
+<!-- toc -->
+- [Introduction](#introduction)
+- [Recommender](#recommender)
+- [Running the recommender](#running-the-recommender)
+  - [Implementation of the recommender](#implementation-of-the-recommender)
+- [Updater](#updater)
+  - [Current implementation](#current-implementation)
+  - [Missing parts](#missing-parts)
+- [Admission-controller](#admission-controller)
+  - [Running the admission-controller](#running-the-admission-controller)
+  - [Implementation of the Admission Controller](#implementation-of-the-admission-controller)
+<!-- /toc -->
 
 ## Introduction
 
@@ -27,6 +28,8 @@ The VPA project consists of 3 components:
 - [Admission Controller](#admission-controller) - sets the correct resource requests on new pods (either just created
   or recreated by their controller due to Updater's activity).
 
+For detailed information about configuration parameters for each component, see the [flags documentation](flags.md).
+
 More on the architecture can be found [HERE](https://github.com/kubernetes/design-proposals-archive/blob/main/autoscaling/vertical-pod-autoscaler.md).
 
 ## Recommender
@@ -39,8 +42,8 @@ can be inspected.
 
 ## Running the recommender
 
-- In order to have historical data pulled in by the recommender, install
-  Prometheus in your cluster and pass its address through a flag.
+- By default the VPA will use a VerticalPodAutoscalerCheckpoint to store history, but
+  it is possible to fetch historical from Prometheus in your cluster.
 - Create RBAC configuration from `../deploy/vpa-rbac.yaml`.
 - Create a deployment with the recommender pod from
   `../deploy/recommender-deployment.yaml`.
@@ -55,7 +58,7 @@ their configuration (e.g. labels) as well as other information, e.g. usage data 
 each container.
 
 After starting the binary, recommender reads the history of running pods and
-their usage from Prometheus into the model.
+their usage from VerticalPodAutoscalerCheckpoint (or Prometheus) into the model.
 It then runs in a loop and at each step performs the following actions:
 
 - update model with recent information on resources (using listers based on

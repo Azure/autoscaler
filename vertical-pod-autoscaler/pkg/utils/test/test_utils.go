@@ -17,7 +17,7 @@ limitations under the License.
 package test
 
 import (
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/stretchr/testify/mock"
@@ -33,6 +33,7 @@ import (
 	vpa_types_v1beta1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1beta1"
 	vpa_lister "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/listers/autoscaling.k8s.io/v1"
 	vpa_lister_v1beta1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/listers/autoscaling.k8s.io/v1beta1"
+	utils "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/utils"
 )
 
 var (
@@ -121,6 +122,23 @@ func (m *PodsEvictionRestrictionMock) CanEvict(pod *apiv1.Pod) bool {
 	return args.Bool(0)
 }
 
+// PodsInPlaceRestrictionMock is a mock of PodsInPlaceRestriction
+type PodsInPlaceRestrictionMock struct {
+	mock.Mock
+}
+
+// InPlaceUpdate is a mock implementation of PodsInPlaceRestriction.InPlaceUpdate
+func (m *PodsInPlaceRestrictionMock) InPlaceUpdate(pod *apiv1.Pod, vpa *vpa_types.VerticalPodAutoscaler, eventRecorder record.EventRecorder) error {
+	args := m.Called(pod, eventRecorder)
+	return args.Error(0)
+}
+
+// CanInPlaceUpdate is a mock implementation of PodsInPlaceRestriction.CanInPlaceUpdate
+func (m *PodsInPlaceRestrictionMock) CanInPlaceUpdate(pod *apiv1.Pod) utils.InPlaceDecision {
+	args := m.Called(pod)
+	return args.Get(0).(utils.InPlaceDecision)
+}
+
 // PodListerMock is a mock of PodLister
 type PodListerMock struct {
 	mock.Mock
@@ -148,7 +166,7 @@ func (m *PodListerMock) List(selector labels.Selector) (ret []*apiv1.Pod, err er
 
 // Get is not implemented for this mock
 func (m *PodListerMock) Get(name string) (*apiv1.Pod, error) {
-	return nil, fmt.Errorf("unimplemented")
+	return nil, errors.New("unimplemented")
 }
 
 // VerticalPodAutoscalerListerMock is a mock of VerticalPodAutoscalerLister or
@@ -179,7 +197,37 @@ func (m *VerticalPodAutoscalerListerMock) VerticalPodAutoscalers(namespace strin
 
 // Get is not implemented for this mock
 func (m *VerticalPodAutoscalerListerMock) Get(name string) (*vpa_types.VerticalPodAutoscaler, error) {
-	return nil, fmt.Errorf("unimplemented")
+	return nil, errors.New("unimplemented")
+}
+
+// VerticalPodAutoscalerCheckPointListerMock is a mock of VerticalPodAutoscalerCheckPointLister
+type VerticalPodAutoscalerCheckPointListerMock struct {
+	mock.Mock
+}
+
+// List is a mock implementation of VerticalPodAutoscalerLister.List
+func (m *VerticalPodAutoscalerCheckPointListerMock) List(selector labels.Selector) (ret []*vpa_types.VerticalPodAutoscalerCheckpoint, err error) {
+	args := m.Called()
+	var returnArg []*vpa_types.VerticalPodAutoscalerCheckpoint
+	if args.Get(0) != nil {
+		returnArg = args.Get(0).([]*vpa_types.VerticalPodAutoscalerCheckpoint)
+	}
+	return returnArg, args.Error(1)
+}
+
+// VerticalPodAutoscalerCheckpoints is a mock implementation of returning a lister for namespace.
+func (m *VerticalPodAutoscalerCheckPointListerMock) VerticalPodAutoscalerCheckpoints(namespace string) vpa_lister.VerticalPodAutoscalerCheckpointNamespaceLister {
+	args := m.Called(namespace)
+	var returnArg vpa_lister.VerticalPodAutoscalerCheckpointNamespaceLister
+	if args.Get(0) != nil {
+		returnArg = args.Get(0).(vpa_lister.VerticalPodAutoscalerCheckpointNamespaceLister)
+	}
+	return returnArg
+}
+
+// Get is not implemented for this mock
+func (m *VerticalPodAutoscalerCheckPointListerMock) Get(name string) (*vpa_types.VerticalPodAutoscalerCheckpoint, error) {
+	return nil, errors.New("unimplemented")
 }
 
 // VerticalPodAutoscalerV1Beta1ListerMock is a mock of VerticalPodAutoscalerLister or
@@ -210,7 +258,7 @@ func (m *VerticalPodAutoscalerV1Beta1ListerMock) VerticalPodAutoscalers(namespac
 
 // Get is not implemented for this mock
 func (m *VerticalPodAutoscalerV1Beta1ListerMock) Get(name string) (*vpa_types_v1beta1.VerticalPodAutoscaler, error) {
-	return nil, fmt.Errorf("unimplemented")
+	return nil, errors.New("unimplemented")
 }
 
 // RecommendationProcessorMock is mock implementation of RecommendationProcessor
@@ -219,9 +267,7 @@ type RecommendationProcessorMock struct {
 }
 
 // Apply is a mock implementation of RecommendationProcessor.Apply
-func (m *RecommendationProcessorMock) Apply(podRecommendation *vpa_types.RecommendedPodResources,
-	policy *vpa_types.PodResourcePolicy,
-	conditions []vpa_types.VerticalPodAutoscalerCondition,
+func (m *RecommendationProcessorMock) Apply(vpa *vpa_types.VerticalPodAutoscaler,
 	pod *apiv1.Pod) (*vpa_types.RecommendedPodResources, map[string][]string, error) {
 	args := m.Called()
 	var returnArg *vpa_types.RecommendedPodResources
@@ -239,11 +285,9 @@ func (m *RecommendationProcessorMock) Apply(podRecommendation *vpa_types.Recomme
 type FakeRecommendationProcessor struct{}
 
 // Apply is a dummy implementation of RecommendationProcessor.Apply which returns provided podRecommendation
-func (f *FakeRecommendationProcessor) Apply(podRecommendation *vpa_types.RecommendedPodResources,
-	policy *vpa_types.PodResourcePolicy,
-	conditions []vpa_types.VerticalPodAutoscalerCondition,
+func (f *FakeRecommendationProcessor) Apply(vpa *vpa_types.VerticalPodAutoscaler,
 	pod *apiv1.Pod) (*vpa_types.RecommendedPodResources, map[string][]string, error) {
-	return podRecommendation, nil, nil
+	return vpa.Status.Recommendation, nil, nil
 }
 
 // fakeEventRecorder is a dummy implementation of record.EventRecorder.
@@ -253,15 +297,15 @@ type fakeEventRecorder struct{}
 func (f *fakeEventRecorder) Event(object runtime.Object, eventtype, reason, message string) {}
 
 // Eventf is a dummy implementation of record.EventRecorder interface.
-func (f *fakeEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {
+func (f *fakeEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...any) {
 }
 
 // PastEventf is a dummy implementation of record.EventRecorder interface.
-func (f *fakeEventRecorder) PastEventf(object runtime.Object, timestamp metav1.Time, eventtype, reason, messageFmt string, args ...interface{}) {
+func (f *fakeEventRecorder) PastEventf(object runtime.Object, timestamp metav1.Time, eventtype, reason, messageFmt string, args ...any) {
 }
 
 // AnnotatedEventf is a dummy implementation of record.EventRecorder interface.
-func (f *fakeEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{}) {
+func (f *fakeEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...any) {
 }
 
 // FakeEventRecorder returns a dummy implementation of record.EventRecorder.
@@ -280,15 +324,15 @@ func (m *mockedEventRecorder) Event(object runtime.Object, eventtype, reason, me
 }
 
 // Eventf is a dummy implementation of record.EventRecorder interface.
-func (m *mockedEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {
+func (m *mockedEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...any) {
 }
 
 // PastEventf is a dummy implementation of record.EventRecorder interface.
-func (m *mockedEventRecorder) PastEventf(object runtime.Object, timestamp metav1.Time, eventtype, reason, messageFmt string, args ...interface{}) {
+func (m *mockedEventRecorder) PastEventf(object runtime.Object, timestamp metav1.Time, eventtype, reason, messageFmt string, args ...any) {
 }
 
 // AnnotatedEventf is a dummy implementation of record.EventRecorder interface.
-func (m *mockedEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{}) {
+func (m *mockedEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...any) {
 }
 
 // MockEventRecorder returns a dummy implementation of record.EventRecorder.

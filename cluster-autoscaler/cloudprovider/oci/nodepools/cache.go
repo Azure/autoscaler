@@ -83,10 +83,14 @@ func (c *nodePoolCache) removeInstance(nodePoolID, instanceID string, nodeName s
 
 	// always try to remove the instance. This call is idempotent
 	scaleDown := true
+	overrideEvictionGraceDuration := "PT0M"
+	forceDeletionAfterOverrideGraceDuration := true
 	resp, err := c.okeClient.DeleteNode(context.Background(), oke.DeleteNodeRequest{
-		NodePoolId:      &nodePoolID,
-		NodeId:          &instanceID,
-		IsDecrementSize: &scaleDown,
+		NodePoolId:                    &nodePoolID,
+		NodeId:                        &instanceID,
+		IsDecrementSize:               &scaleDown,
+		OverrideEvictionGraceDuration: &overrideEvictionGraceDuration,
+		IsForceDeletionAfterOverrideGraceDuration: &forceDeletionAfterOverrideGraceDuration,
 	})
 
 	klog.Infof("Delete Node API returned response: %v, err: %v", resp, err)
@@ -98,9 +102,7 @@ func (c *nodePoolCache) removeInstance(nodePoolID, instanceID string, nodeName s
 		statusSuccess := statusCode >= 200 && statusCode < 300
 		success = statusSuccess ||
 			// 409 means the instance is already going to be processed for deletion
-			statusCode == http.StatusConflict ||
-			// 404 means it is probably already deleted and our cache may be stale
-			statusCode == http.StatusNotFound
+			statusCode == http.StatusConflict
 		if !success {
 			status := httpResp.Status
 			klog.Infof("Received error status %s while deleting node %q", status, instanceID)

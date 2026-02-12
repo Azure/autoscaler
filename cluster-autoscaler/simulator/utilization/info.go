@@ -21,22 +21,22 @@ import (
 	"time"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	drautils "k8s.io/autoscaler/cluster-autoscaler/simulator/dynamicresources/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/drain"
-	pod_util "k8s.io/autoscaler/cluster-autoscaler/utils/pod"
+	podutils "k8s.io/autoscaler/cluster-autoscaler/utils/pod"
 
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	resourcehelper "k8s.io/kubernetes/pkg/api/v1/resource"
-
-	klog "k8s.io/klog/v2"
+	"k8s.io/klog/v2"
 )
 
 // Info contains utilization information for a node.
 type Info struct {
-	CpuUtil float64
-	MemUtil float64
-	GpuUtil float64
+	CpuUtil             float64
+	MemUtil             float64
+	GpuUtil             float64
+	DynamicResourceUtil float64
 	// Resource name of highest utilization resource
 	ResourceName apiv1.ResourceName
 	// Max(CpuUtil, MemUtil) or GpuUtils
@@ -47,16 +47,26 @@ type Info struct {
 // memory) or gpu utilization based on if the node has GPU or not. Per resource
 // utilization is the sum of requests for it divided by allocatable. It also
 // returns the individual cpu, memory and gpu utilization.
-func Calculate(nodeInfo *framework.NodeInfo, skipDaemonSetPods, skipMirrorPods bool, gpuConfig *cloudprovider.GpuConfig, currentTime time.Time) (utilInfo Info, err error) {
-	if gpuConfig != nil {
-		gpuUtil, err := CalculateUtilizationOfResource(nodeInfo, gpuConfig.ResourceName, skipDaemonSetPods, skipMirrorPods, currentTime)
+func Calculate(nodeInfo *framework.NodeInfo, skipDaemonSetPods, skipMirrorPods, draEnabled bool, gpuConfig *cloudprovider.GpuConfig, currentTime time.Time) (utilInfo Info, err error) {
+	if gpuConfig != nil && !gpuConfig.ExposedViaDra() {
+		gpuUtil, err := CalculateUtilizationOfResource(nodeInfo, gpuConfig.ExtendedResourceName, skipDaemonSetPods, skipMirrorPods, currentTime)
 		if err != nil {
-			klog.V(3).Infof("node %s has unready GPU resource: %s", nodeInfo.Node().Name, gpuConfig.ResourceName)
+			klog.V(3).Infof("node %s has unready GPU resource: %s", nodeInfo.Node().Name, gpuConfig.ExtendedResourceName)
 			// Return 0 if GPU is unready. This will guarantee we can still scale down a node with unready GPU.
-			return Info{GpuUtil: 0, ResourceName: gpuConfig.ResourceName, Utilization: 0}, nil
+			return Info{GpuUtil: 0, ResourceName: gpuConfig.ExtendedResourceName, Utilization: 0}, nil
 		}
 		// Skips cpu and memory utilization calculation for node with GPU.
-		return Info{GpuUtil: gpuUtil, ResourceName: gpuConfig.ResourceName, Utilization: gpuUtil}, err
+		return Info{GpuUtil: gpuUtil, ResourceName: gpuConfig.ExtendedResourceName, Utilization: gpuUtil}, err
+	}
+
+	if draEnabled && len(nodeInfo.LocalResourceSlices) > 0 {
+		// TODO(DRA): Figure out how to calculate Node utilization for DRA resources properly. The current logic is provisional, it should work well for Nodes with a single Pool of
+		// expensive Devices but is probably not flexible enough for other scenarios.
+		resourceName, highestUtil, err := drautils.HighestDynamicResourceUtilization(nodeInfo)
+		if err != nil {
+			return Info{}, err
+		}
+		return Info{DynamicResourceUtil: highestUtil, Utilization: highestUtil, ResourceName: resourceName}, nil
 	}
 
 	cpu, err := CalculateUtilizationOfResource(nodeInfo, apiv1.ResourceCPU, skipDaemonSetPods, skipMirrorPods, currentTime)
@@ -97,16 +107,17 @@ func CalculateUtilizationOfResource(nodeInfo *framework.NodeInfo, resourceName a
 	podsRequest := resource.MustParse("0")
 	daemonSetAndMirrorPodsUtilization := resource.MustParse("0")
 	for _, podInfo := range nodeInfo.Pods() {
-		resourceValue := resourcehelper.GetResourceRequestQuantity(podInfo.Pod, resourceName)
+		podRequests := podutils.PodRequests(podInfo.Pod)
+		resourceValue := podRequests[resourceName]
 
 		// factor daemonset pods out of the utilization calculations
-		if skipDaemonSetPods && pod_util.IsDaemonSetPod(podInfo.Pod) {
+		if skipDaemonSetPods && podutils.IsDaemonSetPod(podInfo.Pod) {
 			daemonSetAndMirrorPodsUtilization.Add(resourceValue)
 			continue
 		}
 
 		// factor mirror pods out of the utilization calculations
-		if skipMirrorPods && pod_util.IsMirrorPod(podInfo.Pod) {
+		if skipMirrorPods && podutils.IsMirrorPod(podInfo.Pod) {
 			daemonSetAndMirrorPodsUtilization.Add(resourceValue)
 			continue
 		}

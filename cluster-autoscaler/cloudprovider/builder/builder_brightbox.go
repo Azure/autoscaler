@@ -22,7 +22,7 @@ package builder
 import (
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/brightbox"
-	"k8s.io/autoscaler/cluster-autoscaler/config"
+	coreoptions "k8s.io/autoscaler/cluster-autoscaler/core/options"
 	"k8s.io/client-go/informers"
 )
 
@@ -31,10 +31,10 @@ var AvailableCloudProviders = []string{
 	cloudprovider.BrightboxProviderName,
 }
 
-// DefaultCloudProvider is Brightbox
+// DefaultCloudProvider for Brightbox-only build is Brightbox.
 const DefaultCloudProvider = cloudprovider.BrightboxProviderName
 
-func buildCloudProvider(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter, _ informers.SharedInformerFactory) cloudprovider.CloudProvider {
+func buildCloudProvider(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter, _ informers.SharedInformerFactory) cloudprovider.CloudProvider {
 	switch opts.CloudProviderName {
 	case cloudprovider.BrightboxProviderName:
 		return brightbox.BuildBrightbox(opts, do, rl)

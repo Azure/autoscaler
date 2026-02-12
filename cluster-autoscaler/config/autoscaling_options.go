@@ -50,8 +50,12 @@ type NodeGroupAutoscalingOptions struct {
 	ScaleDownUnreadyTime time.Duration
 	// Maximum time CA waits for node to be provisioned
 	MaxNodeProvisionTime time.Duration
+	// Maximum time CA waits for node to be ready from registered
+	MaxNodeStartupTime time.Duration
 	// ZeroOrMaxNodeScaling means that a node group should be scaled up to maximum size or down to zero nodes all at once instead of one-by-one.
 	ZeroOrMaxNodeScaling bool
+	// AllowNonAtomicScaleUpToMax indicates that partially failing scale-ups of ZeroOrMaxNodeScaling node groups should not be cancelled
+	AllowNonAtomicScaleUpToMax bool
 	// IgnoreDaemonSetsUtilization sets if daemonsets utilization should be considered during node scale-down
 	IgnoreDaemonSetsUtilization bool
 }
@@ -104,8 +108,6 @@ type AutoscalingOptions struct {
 	// NodeGroupDefaults are default values for per NodeGroup options.
 	// They will be used any time a specific value is not provided for a given NodeGroup.
 	NodeGroupDefaults NodeGroupAutoscalingOptions
-	// MaxEmptyBulkDelete is a number of empty nodes that can be removed at the same time.
-	MaxEmptyBulkDelete int
 	// MaxNodesTotal sets the maximum number of nodes in the whole cluster
 	MaxNodesTotal int
 	// MaxCoresTotal sets the maximum number of cores in the whole cluster
@@ -198,10 +200,6 @@ type AutoscalingOptions struct {
 	ConfigNamespace string
 	// ClusterName if available
 	ClusterName string
-	// NodeAutoprovisioningEnabled tells whether the node auto-provisioning is enabled for this cluster.
-	NodeAutoprovisioningEnabled bool
-	// MaxAutoprovisionedNodeGroupCount is the maximum number of autoprovisioned groups in the cluster.
-	MaxAutoprovisionedNodeGroupCount int
 	// UnremovableNodeRecheckTimeout is the timeout before we check again a node that couldn't be removed before
 	UnremovableNodeRecheckTimeout time.Duration
 	// Pods with priority below cutoff are expendable. They can be killed without any consideration during scale down and they don't cause scale-up.
@@ -234,6 +232,9 @@ type AutoscalingOptions struct {
 	BalancingLabels []string
 	// AWSUseStaticInstanceList tells if AWS cloud provider use static instance type list or dynamically fetch from remote APIs.
 	AWSUseStaticInstanceList bool
+	// ScaleFromUnschedulable tells the autoscaler to ignore a node's .spec.unschedulable field when creating a node template.
+	// Specifically, this will cause the autoscaler to set the node template's .spec.unschedulable field to false.
+	ScaleFromUnschedulable bool
 	// GCEOptions contain autoscaling options specific to GCE cloud provider.
 	GCEOptions GCEOptions
 	// KubeClientOpts specify options for kube client
@@ -271,6 +272,8 @@ type AutoscalingOptions struct {
 	// MaxBinpackingTime is the maximum time spend on binpacking for a single scale-up.
 	// If binpacking is limited by this, scale-up will continue with the already calculated scale-up options.
 	MaxBinpackingTime time.Duration
+	// FastpathBinpackingEnabled tells if to use fastpath binpacking algorithm to optimize scale-ups.
+	FastpathBinpackingEnabled bool
 	// NodeDeletionBatcherInterval is a time for how long CA ScaleDown gather nodes to delete them in batch.
 	NodeDeletionBatcherInterval time.Duration
 	// SkipNodesWithSystemPods tells if nodes with pods from kube-system should be deleted (except for DaemonSet or mirror pods)
@@ -282,6 +285,8 @@ type AutoscalingOptions struct {
 	// MinReplicaCount controls the minimum number of replicas that a replica set or replication controller should have
 	// to allow their pods deletion in scale down
 	MinReplicaCount int
+	// BspDisruptionTimeout is the timeout after which CA will evict non-pdb-assigned blocking system pods
+	BspDisruptionTimeout time.Duration
 	// NodeDeleteDelayAfterTaint is the duration to wait before deleting a node after tainting it
 	NodeDeleteDelayAfterTaint time.Duration
 	// NodeGroupSetRatio is a collection of ratios used by CA used to make scaling decisions.
@@ -291,6 +296,8 @@ type AutoscalingOptions struct {
 	DynamicNodeDeleteDelayAfterTaintEnabled bool
 	// BypassedSchedulers are used to specify which schedulers to bypass their processing
 	BypassedSchedulers map[string]bool
+	// AllowedSchedulers when specified CA will proceed only with pods that are targeting allowed schedulers from unschedulable pods and unprocessed pods by BypassedSchedulers.
+	AllowedSchedulers map[string]bool
 	// ProvisioningRequestEnabled tells if CA processes ProvisioningRequest.
 	ProvisioningRequestEnabled bool
 	// AsyncNodeGroupsEnabled tells if CA creates/deletes node groups asynchronously.
@@ -309,6 +316,57 @@ type AutoscalingOptions struct {
 	CheckCapacityProvisioningRequestBatchTimebox time.Duration
 	// ForceDeleteLongUnregisteredNodes is used to enable/disable ignoring min size constraints during removal of long unregistered nodes
 	ForceDeleteLongUnregisteredNodes bool
+	// ForceDeleteFailedNodes is used to enable/disable ignoring min size constraints during removal of failed nodes
+	ForceDeleteFailedNodes bool
+	// DynamicResourceAllocationEnabled configures whether logic for handling DRA objects is enabled.
+	DynamicResourceAllocationEnabled bool
+	// CSINodeAwareSchedulingEnabled configures whether logic for handling CSINode objects is enabled.
+	CSINodeAwareSchedulingEnabled bool
+	// ClusterSnapshotParallelism is the maximum parallelism of cluster snapshot creation.
+	ClusterSnapshotParallelism int
+	// PredicateParallelism is the number of goroutines to use for running scheduler predicates.
+	PredicateParallelism int
+	// CheckCapacityProcessorInstance is the name of the processor instance.
+	// Only ProvisioningRequests that define this name in their parameters with the key "processorInstance" will be processed by this CA instance.
+	// It only refers to check capacity ProvisioningRequests, but if not empty, best-effort atomic ProvisioningRequests processing is disabled in this instance.
+	// Not recommended: Until CA 1.35, ProvisioningRequests with this name as prefix in their class will be also processed.
+	CheckCapacityProcessorInstance string
+	// MaxInactivityTime is the maximum duration without recorded autoscaler activity before it is considered unhealthy.
+	MaxInactivityTime time.Duration
+	// MaxFailingTime is the maximum duration without a successful autoscaler run before it is considered unhealthy.
+	MaxFailingTime time.Duration
+	// DebuggingSnapshotEnabled is used to enable/disable debugging snapshot creation.
+	DebuggingSnapshotEnabled bool
+	// EnableProfiling is debug/pprof endpoint enabled.
+	EnableProfiling bool
+	// Address is the address of an auxiliary endpoint exposing process information like metrics, health checks and profiling data.
+	Address string
+	// EmitPerNodeGroupMetrics is used to enable/disable emitting per node group metrics.
+	EmitPerNodeGroupMetrics bool
+	// FrequentLoopsEnabled is used to enable/disable frequent loops.
+	FrequentLoopsEnabled bool
+	// ScanInterval is how often cluster is reevaluated for scale up or down
+	ScanInterval time.Duration
+	// ForceDaemonSets is used to block scale-up of node groups too small for all suitable Daemon Sets pods.
+	ForceDaemonSets bool
+	// NodeInfoCacheExpireTime is the time after which the node info cache expires for each item, Default value is 10 years.
+	NodeInfoCacheExpireTime time.Duration
+	// ProactiveScaleupEnabled is used to enable/disable proactive scale up.
+	ProactiveScaleupEnabled bool
+	// PodInjectionLimit limits total number of pods while injecting fake pods.
+	PodInjectionLimit int
+	// NodeDeletionCandidateTTL is the maximum time a node can be marked as removable without being deleted.
+	// This is used to prevent nodes from being stuck in the removable state during if the CA deployment becomes inactive.
+	NodeDeletionCandidateTTL time.Duration
+	//CapacitybufferControllerEnabled tells if CA should run default capacity buffer as sub-process or not
+	CapacitybufferControllerEnabled bool
+	// CapacitybufferPodInjectionEnabled tells if CA should injects fake pods for capacity buffers that are ready for provisioning
+	CapacitybufferPodInjectionEnabled bool
+	// MaxNodeSkipEvalTimeTrackerEnabled is used to enabled/disable the tracking of maximum evaluation time of a node being skipped during ScaleDown.
+	MaxNodeSkipEvalTimeTrackerEnabled bool
+	// NodeRemovalLatencyTrackingEnabled is used to enable/disable node removal latency tracking.
+	NodeRemovalLatencyTrackingEnabled bool
+	CapacityQuotasEnabled             bool
 }
 
 // KubeClientOptions specify options for kube client

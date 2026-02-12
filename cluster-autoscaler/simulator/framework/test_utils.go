@@ -18,6 +18,7 @@ package framework
 
 import (
 	apiv1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/client-go/informers"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
 	scheduler_config_latest "k8s.io/kubernetes/pkg/scheduler/apis/config/latest"
@@ -33,8 +34,19 @@ type testFailer interface {
 func NewTestNodeInfo(node *apiv1.Node, pods ...*apiv1.Pod) *NodeInfo {
 	nodeInfo := NewNodeInfo(node, nil)
 	for _, pod := range pods {
-		nodeInfo.AddPod(&PodInfo{Pod: pod, NeededResourceClaims: nil})
+		nodeInfo.AddPod(NewPodInfo(pod, nil))
 	}
+	return nodeInfo
+}
+
+// NewTestNodeInfoWithCSI returns a new NodeInfo object with CSINode information, but no DRA related
+// information. It is meant to be used only from tests.
+func NewTestNodeInfoWithCSI(node *apiv1.Node, csiNode *storagev1.CSINode, pods ...*apiv1.Pod) *NodeInfo {
+	nodeInfo := NewNodeInfo(node, nil)
+	for _, pod := range pods {
+		nodeInfo.AddPod(NewPodInfo(pod, nil))
+	}
+	nodeInfo.CSINode = csiNode
 	return nodeInfo
 }
 
@@ -44,7 +56,7 @@ func NewTestFrameworkHandle() (*Handle, error) {
 	if err != nil {
 		return nil, err
 	}
-	fwHandle, err := NewHandle(informers.NewSharedInformerFactory(clientsetfake.NewSimpleClientset(), 0), defaultConfig)
+	fwHandle, err := NewHandle(informers.NewSharedInformerFactory(clientsetfake.NewSimpleClientset(), 0), defaultConfig, true, true)
 	if err != nil {
 		return nil, err
 	}

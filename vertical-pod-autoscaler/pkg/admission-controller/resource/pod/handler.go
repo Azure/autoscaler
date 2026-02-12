@@ -19,16 +19,17 @@ package pod
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
+
 	resource_admission "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource/pod/patch"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource/vpa"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/admission"
-	"k8s.io/klog/v2"
 )
 
 // resourceHandler builds patches for Pods.
@@ -66,7 +67,7 @@ func (h *resourceHandler) DisallowIncorrectObjects() bool {
 // GetPatches builds patches for Pod in given admission request.
 func (h *resourceHandler) GetPatches(ctx context.Context, ar *admissionv1.AdmissionRequest) ([]resource_admission.PatchRecord, error) {
 	if ar.Resource.Version != "v1" {
-		return nil, fmt.Errorf("only v1 Pods are supported")
+		return nil, errors.New("only v1 Pods are supported")
 	}
 	raw, namespace := ar.Object.Raw, ar.Namespace
 	pod := corev1.Pod{}

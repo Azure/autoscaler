@@ -18,8 +18,11 @@ package hetzner
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,8 +31,9 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	"k8s.io/autoscaler/cluster-autoscaler/config"
-	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/hetzner/hcloud-go/hcloud"
+	coreoptions "k8s.io/autoscaler/cluster-autoscaler/core/options"
+	autoscalerErrors "k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 	"k8s.io/klog/v2"
 )
@@ -45,6 +49,7 @@ const (
 	serverCreateTimeoutDefault = 5 * time.Minute
 	serverRegisterTimeout      = 10 * time.Minute
 	defaultPodAmountsLimit     = 110
+	maxPlacementGroupSize      = 10
 )
 
 // HetznerCloudProvider implements CloudProvider interface.
@@ -107,7 +112,7 @@ func (d *HetznerCloudProvider) HasInstance(node *apiv1.Node) (bool, error) {
 
 // Pricing returns pricing model for this cloud provider or error if not
 // available. Implementation optional.
-func (d *HetznerCloudProvider) Pricing() (cloudprovider.PricingModel, errors.AutoscalerError) {
+func (d *HetznerCloudProvider) Pricing() (cloudprovider.PricingModel, autoscalerErrors.AutoscalerError) {
 	return nil, cloudprovider.ErrNotImplemented
 }
 
@@ -179,33 +184,8 @@ func (d *HetznerCloudProvider) Refresh() error {
 	return nil
 }
 
-// Check if any defined placement groups could potentially have more than the maximum allowed number of nodes
-func getLargePlacementGroups(nodeGroups map[string]*hetznerNodeGroup, threshold int) []int64 {
-	placementGroupTotals := make(map[int64]int)
-
-	// Calculate totals for each placement group
-	for _, nodeGroup := range nodeGroups {
-		if nodeGroup.placementGroup == nil || nodeGroup.placementGroup.ID == 0 {
-			continue
-		}
-
-		placementGroupID := nodeGroup.placementGroup.ID
-		placementGroupTotals[placementGroupID] += nodeGroup.maxSize
-	}
-
-	// Collect placement groups with total maxSize > threshold
-	var largePlacementGroupIDs []int64
-	for id, totalMaxSize := range placementGroupTotals {
-		if totalMaxSize > threshold {
-			largePlacementGroupIDs = append(largePlacementGroupIDs, id)
-		}
-	}
-
-	return largePlacementGroupIDs
-}
-
 // BuildHetzner builds the Hetzner cloud provider.
-func BuildHetzner(_ config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
+func BuildHetzner(_ *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
 	manager, err := newManager()
 	if err != nil {
 		klog.Fatalf("Failed to create Hetzner manager: %v", err)
@@ -220,8 +200,20 @@ func BuildHetzner(_ config.AutoscalingOptions, do cloudprovider.NodeGroupDiscove
 		klog.Fatalf("No cluster config present provider: %v", err)
 	}
 
+	var defaultSubnetIPRange *net.IPNet
+	if manager.clusterConfig.IsUsingNewFormat && manager.network != nil && manager.clusterConfig.DefaultSubnetIPRange != "" {
+		_, defaultSubnetIPRange, err = net.ParseCIDR(manager.clusterConfig.DefaultSubnetIPRange)
+		if err != nil {
+			klog.Fatalf("failed to parse default subnet ip range %s: %s", manager.clusterConfig.DefaultSubnetIPRange, err)
+		}
+		if !isIpRangeInNetwork(defaultSubnetIPRange, manager.network) {
+			klog.Fatalf("default subnet ip range %s is not part of network %s", manager.clusterConfig.DefaultSubnetIPRange, manager.network.Name)
+		}
+	}
+
 	validNodePoolName := regexp.MustCompile(`^[a-z0-9A-Z]+[a-z0-9A-Z\-\.\_]*[a-z0-9A-Z]+$|^[a-z0-9A-Z]{1}$`)
 	clusterUpdateLock := sync.Mutex{}
+	placementGroupTotals := make(map[string]int)
 	for _, nodegroupSpec := range do.NodeGroupSpecs {
 		spec, err := createNodePoolSpec(nodegroupSpec)
 		if err != nil {
@@ -234,11 +226,40 @@ func BuildHetzner(_ config.AutoscalingOptions, do cloudprovider.NodeGroupDiscove
 			klog.Fatalf("Failed to get servers for for node pool %s error: %v", nodegroupSpec, err)
 		}
 
+		var placementGroup *hcloud.PlacementGroup
+		var subnetIPRange *net.IPNet
 		if manager.clusterConfig.IsUsingNewFormat {
 			_, ok := manager.clusterConfig.NodeConfigs[spec.name]
 			if !ok {
 				klog.Fatalf("No node config present for node group id `%s` error: %v", spec.name, err)
 			}
+
+			placementGroupRef := manager.clusterConfig.NodeConfigs[spec.name].PlacementGroup
+
+			if placementGroupRef != "" {
+				placementGroup, err = getPlacementGroup(manager, placementGroupRef)
+				if err != nil {
+					klog.Fatalf("Encountered error while fetching placement group: %v", err)
+				}
+				if placementGroup == nil {
+					klog.Fatalf("The requested placement group `%s` does not appear to exist.", placementGroupRef)
+				}
+				placementGroupTotals[placementGroup.Name] += spec.maxSize
+			}
+			if manager.network != nil {
+				if manager.clusterConfig.NodeConfigs[spec.name].SubnetIPRange != "" {
+					_, subnetIPRange, err = net.ParseCIDR(manager.clusterConfig.NodeConfigs[spec.name].SubnetIPRange)
+					if err != nil {
+						klog.Fatalf("failed to parse subnet ip range %s for node group %s: %s", manager.clusterConfig.NodeConfigs[spec.name].SubnetIPRange, spec.name, err)
+					}
+					if !isIpRangeInNetwork(subnetIPRange, manager.network) {
+						klog.Fatalf("subnet ip range %s for node group %s is not part of network %s", manager.clusterConfig.NodeConfigs[spec.name].SubnetIPRange, spec.name, manager.network.Name)
+					}
+				} else {
+					subnetIPRange = defaultSubnetIPRange
+				}
+			}
+
 		}
 
 		manager.nodeGroups[spec.name] = &hetznerNodeGroup{
@@ -250,61 +271,50 @@ func BuildHetzner(_ config.AutoscalingOptions, do cloudprovider.NodeGroupDiscove
 			region:             strings.ToLower(spec.region),
 			targetSize:         len(servers),
 			clusterUpdateMutex: &clusterUpdateLock,
-		}
-
-		// If a placement group was specified, check with the API to see if it exists
-		if manager.clusterConfig.IsUsingNewFormat {
-
-			placementGroupRef := manager.clusterConfig.NodeConfigs[spec.name].PlacementGroup
-
-			if placementGroupRef == "" {
-				continue
-			}
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			placementGroup, _, err := manager.client.PlacementGroup.Get(ctx, placementGroupRef)
-
-			// Check if an error occurred
-			if err != nil {
-				if err == context.DeadlineExceeded {
-					klog.Fatalf("Timed out checking if placement group `%s` exists.", placementGroupRef)
-				} else {
-					klog.Fatalf("Failed to verify if placement group `%s` exists error: %v", placementGroupRef, err)
-				}
-			}
-
-			// If the placement group exists, add it to the node group config
-			if placementGroup != nil {
-				manager.nodeGroups[spec.name].placementGroup = placementGroup
-			} else {
-				klog.Fatalf("The requested placement group `%s` does not appear to exist.", placementGroupRef)
-			}
+			placementGroup:     placementGroup,
+			subnetIPRange:      subnetIPRange,
 		}
 	}
 
-	// Get placement groups with total maxSize over the maximum allowed
-	maxPlacementGroupSize := 10
-
-	largePlacementGroups := getLargePlacementGroups(manager.nodeGroups, maxPlacementGroupSize)
-
-	// Fail if we have placement groups over the max size
-	if len(largePlacementGroups) > 0 {
-
-		// Gather placement group names
-		var placementGroupIDs string
-		for i, placementGroupID := range largePlacementGroups {
-			if i > 0 {
-				placementGroupIDs += ", "
-			}
-			placementGroupIDs += strconv.FormatInt(placementGroupID, 10)
+	// Check if placement groups spanned over multiple node groups exceeds max placement group size
+	for pgName, totalMaxSize := range placementGroupTotals {
+		if totalMaxSize > maxPlacementGroupSize {
+			klog.Fatalf(
+				"Placement group %s exceeds max placement group size of %d, size %d",
+				pgName,
+				maxPlacementGroupSize,
+				totalMaxSize,
+			)
 		}
-
-		klog.Fatalf("The following placement groups have a potential size over the allowed maximum of %d: %s.", maxPlacementGroupSize, placementGroupIDs)
 	}
 
 	return provider
+}
+
+func isIpRangeInNetwork(ipRange *net.IPNet, network *hcloud.Network) bool {
+	return slices.ContainsFunc(network.Subnets, func(subnet hcloud.NetworkSubnet) bool {
+		if ipRange == nil || subnet.IPRange == nil {
+			return false
+		}
+		return subnet.IPRange.IP.Equal(ipRange.IP) && len(subnet.IPRange.Mask) == len(ipRange.Mask)
+	})
+}
+
+func getPlacementGroup(manager *hetznerManager, placementGroupRef string) (*hcloud.PlacementGroup, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	placementGroup, _, err := manager.client.PlacementGroup.Get(ctx, placementGroupRef)
+
+	// Check if an error occurred
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("Timed out checking if placement group `%s` exists.", placementGroupRef)
+		}
+		return nil, fmt.Errorf("Failed to verify if placement group `%s` exists. Error: %w", placementGroupRef, err)
+	}
+
+	return placementGroup, nil
 }
 
 func createNodePoolSpec(groupSpec string) (*hetznerNodeGroupSpec, error) {

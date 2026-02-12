@@ -27,8 +27,9 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	"k8s.io/autoscaler/cluster-autoscaler/config"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/magnum/gophercloud/openstack/containerinfra/v1/nodegroups"
 	"k8s.io/autoscaler/cluster-autoscaler/config/dynamic"
+	coreoptions "k8s.io/autoscaler/cluster-autoscaler/core/options"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
 	klog "k8s.io/klog/v2"
@@ -267,6 +268,7 @@ func (mcp *magnumCloudProvider) refreshNodeGroups() error {
 			maxSize:           *nodeGroup.MaxNodeCount,
 			targetSize:        nodeGroup.NodeCount,
 			deletedNodes:      make(map[string]time.Time),
+			nodeTemplate:      getMagnumNodeTemplate(nodeGroup, mcp.magnumManager),
 		}
 		mcp.AddNodeGroup(ng)
 		mcp.magnumManager.fetchNodeGroupStackIDs(ng.UUID)
@@ -315,7 +317,7 @@ func (mcp *magnumCloudProvider) refreshNodeGroups() error {
 //
 // The magnumManager is created here, and the initial node groups are created
 // based on the static or auto discovery specs provided via the command line parameters.
-func BuildMagnum(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
+func BuildMagnum(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter) cloudprovider.CloudProvider {
 	var config io.ReadCloser
 
 	// Should be loaded with --cloud-config /etc/kubernetes/kube_openstack_config from master node.
@@ -336,7 +338,7 @@ func BuildMagnum(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisco
 		klog.Fatal("can not use both static node group discovery and node group auto discovery")
 	}
 
-	manager, err := createMagnumManager(config, do, opts)
+	manager, err := createMagnumManager(config, do, opts.AutoscalingOptions)
 	if err != nil {
 		klog.Fatalf("Failed to create magnum manager: %v", err)
 	}
@@ -401,4 +403,29 @@ func BuildMagnum(opts config.AutoscalingOptions, do cloudprovider.NodeGroupDisco
 	}
 
 	return provider
+}
+
+func getMagnumNodeTemplate(nodegroup *nodegroups.NodeGroup, client magnumManager) *MagnumNodeTemplate {
+	template := &MagnumNodeTemplate{}
+	flavor, err := client.getFlavorById(nodegroup.FlavorID)
+
+	if err != nil {
+		klog.V(5).ErrorS(err, "Failed to build MagnumNodeTemplate. We return a fake template with 4 cores, 4GB ram and 50GB disk.")
+		template.CPUCores = 4
+		template.RAMMegabytes = 4096
+		template.DiskGigabytes = 50
+	} else {
+		template.CPUCores = flavor.VCPUs
+		template.RAMMegabytes = flavor.RAM
+		template.DiskGigabytes = flavor.Disk
+	}
+
+	if len(nodegroup.Labels) == 0 {
+		template.Labels = make(map[string]string)
+	} else {
+		template.Labels = nodegroup.Labels
+	}
+	template.Labels["magnum.openstack.org/nodegroup"] = nodegroup.Name
+
+	return template
 }

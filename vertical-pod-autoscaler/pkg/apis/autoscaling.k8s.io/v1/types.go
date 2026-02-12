@@ -14,12 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package v1 contains definitions of Vertical Pod Autoscaler related objects.
 package v1
 
 import (
 	autoscaling "k8s.io/api/autoscaling/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -46,6 +46,7 @@ type VerticalPodAutoscalerList struct {
 // +kubebuilder:printcolumn:name="Mem",type="string",JSONPath=".status.recommendation.containerRecommendations[0].target.memory"
 // +kubebuilder:printcolumn:name="Provided",type="string",JSONPath=".status.conditions[?(@.type=='RecommendationProvided')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:metadata:annotations="api-approved.kubernetes.io=https://github.com/kubernetes/kubernetes/pull/63797"
 
 // VerticalPodAutoscaler is the configuration for a vertical pod
 // autoscaler, which automatically manages pod resources based on historical and
@@ -133,7 +134,7 @@ type EvictionRequirement struct {
 // PodUpdatePolicy describes the rules on how changes are applied to the pods.
 type PodUpdatePolicy struct {
 	// Controls when autoscaler applies changes to the pod resources.
-	// The default is 'Auto'.
+	// The default is 'Recreate'.
 	// +optional
 	UpdateMode *UpdateMode `json:"updateMode,omitempty" protobuf:"bytes,1,opt,name=updateMode"`
 
@@ -151,7 +152,7 @@ type PodUpdatePolicy struct {
 }
 
 // UpdateMode controls when autoscaler applies changes to the pod resources.
-// +kubebuilder:validation:Enum=Off;Initial;Recreate;Auto
+// +kubebuilder:validation:Enum=Off;Initial;Recreate;InPlaceOrRecreate;Auto
 type UpdateMode string
 
 const (
@@ -169,8 +170,19 @@ const (
 	// UpdateModeAuto means that autoscaler assigns resources on pod creation
 	// and additionally can update them during the lifetime of the pod,
 	// using any available update method. Currently this is equivalent to
-	// Recreate, which is the only available update method.
+	// Recreate.
+	//
+	// Deprecated: This value is deprecated and will be removed in a future API version.
+	// Use explicit update modes like "Recreate", "Initial", or "InPlaceOrRecreate" instead.
+	// See https://github.com/kubernetes/autoscaler/issues/8424 for more details.
 	UpdateModeAuto UpdateMode = "Auto"
+	// UpdateModeInPlaceOrRecreate means that autoscaler tries to assign resources in-place.
+	// If this is not possible (e.g., resizing takes too long or is infeasible), it falls back to the
+	// "Recreate" update mode.
+	// Requires VPA level feature gate "InPlaceOrRecreate" to be enabled
+	// on the admission and updater pods.
+	// Requires cluster feature gate "InPlacePodVerticalScaling" to be enabled.
+	UpdateModeInPlaceOrRecreate UpdateMode = "InPlaceOrRecreate"
 )
 
 // PodResourcePolicy controls how autoscaler computes the recommended resources
@@ -214,6 +226,14 @@ type ContainerResourcePolicy struct {
 	// The default is "RequestsAndLimits".
 	// +optional
 	ControlledValues *ContainerControlledValues `json:"controlledValues,omitempty" protobuf:"bytes,6,rep,name=controlledValues"`
+
+	// oomBumpUpRatio is the ratio to increase memory when OOM is detected.
+	// +optional
+	OOMBumpUpRatio *resource.Quantity `json:"oomBumpUpRatio,omitempty" protobuf:"bytes,7,opt,name=oomBumpUpRatio"`
+
+	// oomMinBumpUp is the minimum increase in memory when OOM is detected.
+	// +optional
+	OOMMinBumpUp *resource.Quantity `json:"oomMinBumpUp,omitempty" protobuf:"bytes,8,opt,name=oomMinBumpUp"`
 }
 
 const (
@@ -347,6 +367,7 @@ type VerticalPodAutoscalerCondition struct {
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:resource:shortName=vpacheckpoint
+// +kubebuilder:metadata:annotations="api-approved.kubernetes.io=https://github.com/kubernetes/kubernetes/pull/63797"
 
 // VerticalPodAutoscalerCheckpoint is the checkpoint of the internal state of VPA that
 // is used for recovery after recommender's restart.
@@ -397,7 +418,7 @@ type VerticalPodAutoscalerCheckpointStatus struct {
 	// Checkpoint of histogram for consumption of memory.
 	MemoryHistogram HistogramCheckpoint `json:"memoryHistogram,omitempty" protobuf:"bytes,4,rep,name=memoryHistogram"`
 
-	// Timestamp of the fist sample from the histograms.
+	// Timestamp of the first sample from the histograms.
 	// +nullable
 	FirstSampleStart metav1.Time `json:"firstSampleStart,omitempty" protobuf:"bytes,5,opt,name=firstSampleStart"`
 

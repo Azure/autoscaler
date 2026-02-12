@@ -24,7 +24,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/autoscaler/cluster-autoscaler/apis/provisioningrequest/autoscaling.x-k8s.io/v1"
-	"k8s.io/autoscaler/cluster-autoscaler/context"
+	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest"
 	"k8s.io/autoscaler/cluster-autoscaler/provisioningrequest/conditions"
 	provreq_pods "k8s.io/autoscaler/cluster-autoscaler/provisioningrequest/pods"
@@ -50,15 +50,16 @@ type injector interface {
 }
 
 type provReqProcessor struct {
-	now        func() time.Time
-	maxUpdated int
-	client     *provreqclient.ProvisioningRequestClient
-	injector   injector
+	now                            func() time.Time
+	maxUpdated                     int
+	client                         *provreqclient.ProvisioningRequestClient
+	injector                       injector
+	checkCapacityProcessorInstance string
 }
 
 // NewProvReqProcessor return ProvisioningRequestProcessor.
-func NewProvReqProcessor(client *provreqclient.ProvisioningRequestClient) *provReqProcessor {
-	return &provReqProcessor{now: time.Now, maxUpdated: defaultMaxUpdated, client: client, injector: scheduling.NewHintingSimulator()}
+func NewProvReqProcessor(client *provreqclient.ProvisioningRequestClient, checkCapacityProcessorInstance string) *provReqProcessor {
+	return &provReqProcessor{now: time.Now, maxUpdated: defaultMaxUpdated, client: client, injector: scheduling.NewHintingSimulator(), checkCapacityProcessorInstance: checkCapacityProcessorInstance}
 }
 
 // Refresh implements loop.Observer interface and will be run at the start
@@ -84,7 +85,7 @@ func (p *provReqProcessor) refresh(provReqs []*provreqwrapper.ProvisioningReques
 		if len(expiredProvReq) >= p.maxUpdated {
 			break
 		}
-		if ok, found := provisioningrequest.SupportedProvisioningClasses[provReq.Spec.ProvisioningClassName]; !ok || !found {
+		if !provisioningrequest.SupportedProvisioningClass(provReq.ProvisioningRequest, p.checkCapacityProcessorInstance) {
 			continue
 		}
 		conditions := provReq.Status.Conditions
@@ -127,8 +128,8 @@ func (p *provReqProcessor) CleanUp() {}
 
 // Process implements PodListProcessor.Process() and inject fake pods to the cluster snapshoot for Provisioned ProvReqs in order to
 // reserve capacity from ScaleDown.
-func (p *provReqProcessor) Process(context *context.AutoscalingContext, unschedulablePods []*apiv1.Pod) ([]*apiv1.Pod, error) {
-	err := p.bookCapacity(context)
+func (p *provReqProcessor) Process(autoscalingCtx *ca_context.AutoscalingContext, unschedulablePods []*apiv1.Pod) ([]*apiv1.Pod, error) {
+	err := p.bookCapacity(autoscalingCtx)
 	if err != nil {
 		klog.Warningf("Failed to book capacity for ProvisioningRequests: %s", err)
 	}
@@ -137,14 +138,14 @@ func (p *provReqProcessor) Process(context *context.AutoscalingContext, unschedu
 
 // bookCapacity schedule fake pods for ProvisioningRequest that should have reserved capacity
 // in the cluster.
-func (p *provReqProcessor) bookCapacity(ctx *context.AutoscalingContext) error {
+func (p *provReqProcessor) bookCapacity(autoscalingCtx *ca_context.AutoscalingContext) error {
 	provReqs, err := p.client.ProvisioningRequests()
 	if err != nil {
 		return fmt.Errorf("couldn't fetch ProvisioningRequests in the cluster: %v", err)
 	}
 	podsToCreate := []*apiv1.Pod{}
 	for _, provReq := range provReqs {
-		if !conditions.ShouldCapacityBeBooked(provReq) {
+		if !conditions.ShouldCapacityBeBooked(provReq, p.checkCapacityProcessorInstance) {
 			continue
 		}
 		pods, err := provreq_pods.PodsForProvisioningRequest(provReq)
@@ -164,7 +165,7 @@ func (p *provReqProcessor) bookCapacity(ctx *context.AutoscalingContext) error {
 		return nil
 	}
 	// Scheduling the pods to reserve capacity for provisioning request.
-	if _, _, err = p.injector.TrySchedulePods(ctx.ClusterSnapshot, podsToCreate, scheduling.ScheduleAnywhere, false); err != nil {
+	if _, _, err = p.injector.TrySchedulePods(autoscalingCtx.ClusterSnapshot, podsToCreate, scheduling.ScheduleAnywhere, false); err != nil {
 		return err
 	}
 	return nil

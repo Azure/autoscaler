@@ -130,7 +130,7 @@ type AutoscalingGceClient interface {
 	FetchMigsWithName(zone string, filter *regexp.Regexp) ([]string, error)
 	FetchZones(region string) ([]string, error)
 	FetchAvailableCpuPlatforms() (map[string][]string, error)
-	FetchAvailableDiskTypes() (map[string][]string, error)
+	FetchAvailableDiskTypes(zone string) ([]string, error)
 	FetchReservations() ([]*gce.Reservation, error)
 	FetchReservationsInProject(projectId string) ([]*gce.Reservation, error)
 	FetchListManagedInstancesResults(migRef GceRef) (string, error)
@@ -247,12 +247,12 @@ func (client *autoscalingGceClientV1) FetchMigTargetSize(migRef GceRef) (int64, 
 	if err != nil {
 		if err, ok := err.(*googleapi.Error); ok {
 			if err.Code == http.StatusNotFound {
-				return 0, errors.NewAutoscalerError(errors.NodeGroupDoesNotExistError, "%s", err.Error())
+				return 0, errors.NewAutoscalerError(errors.NodeGroupDoesNotExistError, err.Error())
 			}
 		}
 		return 0, err
 	}
-	return igm.TargetSize, nil
+	return igm.TargetSize + igm.TargetSuspendedSize, nil
 }
 
 func (client *autoscalingGceClientV1) FetchMigBasename(migRef GceRef) (string, error) {
@@ -262,7 +262,7 @@ func (client *autoscalingGceClientV1) FetchMigBasename(migRef GceRef) (string, e
 	igm, err := client.gceService.InstanceGroupManagers.Get(migRef.Project, migRef.Zone, migRef.Name).Context(ctx).Do()
 	if err != nil {
 		if err, ok := err.(*googleapi.Error); ok && err.Code == http.StatusNotFound {
-			return "", errors.NewAutoscalerError(errors.NodeGroupDoesNotExistError, "%s", err.Error())
+			return "", errors.NewAutoscalerError(errors.NodeGroupDoesNotExistError, err.Error())
 		}
 		return "", err
 	}
@@ -277,7 +277,7 @@ func (client *autoscalingGceClientV1) FetchListManagedInstancesResults(migRef Gc
 	if err != nil {
 		if err, ok := err.(*googleapi.Error); ok {
 			if err.Code == http.StatusNotFound {
-				return "", errors.NewAutoscalerError(errors.NodeGroupDoesNotExistError, "%s", err.Error())
+				return "", errors.NewAutoscalerError(errors.NodeGroupDoesNotExistError, err.Error())
 			}
 		}
 		return "", err
@@ -753,21 +753,13 @@ func (client *autoscalingGceClientV1) FetchAvailableCpuPlatforms() (map[string][
 	return availableCpuPlatforms, nil
 }
 
-func (client *autoscalingGceClientV1) FetchAvailableDiskTypes() (map[string][]string, error) {
-	availableDiskTypes := make(map[string][]string)
+func (client *autoscalingGceClientV1) FetchAvailableDiskTypes(zone string) ([]string, error) {
+	availableDiskTypes := []string{}
 
-	req := client.gceService.DiskTypes.AggregatedList(client.projectId)
-	if err := req.Pages(context.TODO(), func(page *gce.DiskTypeAggregatedList) error {
-		for _, diskTypesScopedList := range page.Items {
-			for _, diskType := range diskTypesScopedList.DiskTypes {
-				// skip data for regions
-				if diskType.Zone == "" {
-					continue
-				}
-				// convert URL of the zone, into the short name, e.g. us-central1-a
-				zone := path.Base(diskType.Zone)
-				availableDiskTypes[zone] = append(availableDiskTypes[zone], diskType.Name)
-			}
+	req := client.gceService.DiskTypes.List(client.projectId, zone)
+	if err := req.Pages(context.TODO(), func(page *gce.DiskTypeList) error {
+		for _, diskType := range page.Items {
+			availableDiskTypes = append(availableDiskTypes, diskType.Name)
 		}
 		return nil
 	}); err != nil {
@@ -785,7 +777,7 @@ func (client *autoscalingGceClientV1) FetchMigTemplateName(migRef GceRef) (Insta
 	if err != nil {
 		if err, ok := err.(*googleapi.Error); ok {
 			if err.Code == http.StatusNotFound {
-				return InstanceTemplateName{}, errors.NewAutoscalerError(errors.NodeGroupDoesNotExistError, "%s", err.Error())
+				return InstanceTemplateName{}, errors.NewAutoscalerError(errors.NodeGroupDoesNotExistError, err.Error())
 			}
 		}
 		return InstanceTemplateName{}, err

@@ -61,11 +61,11 @@ func getProportionalResourceLimit(resourceName core.ResourceName, originalLimit,
 	}
 	// originalLimit not set, don't set limit.
 	if originalLimit == nil || originalLimit.Value() == 0 {
-		return nil, ""
+		return nil, fmt.Sprintf("%v: limit NOT set since originalLimit is nil or 0", resourceName)
 	}
 	// recommendedRequest not set, don't set limit.
 	if recommendedRequest == nil || recommendedRequest.Value() == 0 {
-		return nil, ""
+		return nil, fmt.Sprintf("%v: limit NOT set since recommendedRequest is nil or 0", resourceName)
 	}
 	// originalLimit set but originalRequest not set - K8s will treat the pod as if they were equal,
 	// recommend limit equal to request
@@ -79,14 +79,14 @@ func getProportionalResourceLimit(resourceName core.ResourceName, originalLimit,
 		return &result, ""
 	}
 	if resourceName == core.ResourceCPU {
-		result, capped := scaleQuantityProportionallyCPU( /*scaledQuantity=*/ originalLimit /*scaleBase=*/, originalRequest /*scaleResult=*/, recommendedRequest, noRounding)
+		result, capped := scaleQuantityProportionallyCPU( /* scaledQuantity= */ originalLimit /* scaleBase= */, originalRequest /* scaleResult= */, recommendedRequest, noRounding)
 		if !capped {
 			return result, ""
 		}
 		return result, fmt.Sprintf(
 			"%v: failed to keep limit to request ratio; capping limit to int64", resourceName)
 	}
-	result, capped := scaleQuantityProportionallyMem( /*scaledQuantity=*/ originalLimit /*scaleBase=*/, originalRequest /*scaleResult=*/, recommendedRequest, noRounding)
+	result, capped := scaleQuantityProportionallyMem( /* scaledQuantity= */ originalLimit /* scaleBase= */, originalRequest /* scaleResult= */, recommendedRequest, noRounding)
 	if !capped {
 		return result, ""
 	}
@@ -112,10 +112,10 @@ func GetBoundaryRequest(resourceName core.ResourceName, originalRequest, origina
 	// Determine which scaling function to use based on resource type.
 	var result *resource.Quantity
 	if resourceName == core.ResourceCPU {
-		result, _ = scaleQuantityProportionallyCPU(originalRequest /* scaledQuantity */, originalLimit /*scaleBase*/, boundaryLimit /*scaleResult*/, noRounding)
+		result, _ = scaleQuantityProportionallyCPU(originalRequest /* scaledQuantity */, originalLimit /* scaleBase */, boundaryLimit /* scaleResult */, noRounding)
 		return result
 	}
-	result, _ = scaleQuantityProportionallyMem(originalRequest /* scaledQuantity */, originalLimit /*scaleBase*/, boundaryLimit /*scaleResult*/, noRounding)
+	result, _ = scaleQuantityProportionallyMem(originalRequest /* scaledQuantity */, originalLimit /* scaleBase */, boundaryLimit /* scaleResult */, noRounding)
 	return result
 }
 

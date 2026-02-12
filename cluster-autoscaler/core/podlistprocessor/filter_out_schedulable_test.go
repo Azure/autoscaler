@@ -253,7 +253,7 @@ func BenchmarkFilterOutSchedulable(b *testing.B) {
 			return testsnapshot.NewCustomTestSnapshotOrDie(b, store.NewBasicSnapshotStore())
 		},
 		"delta": func() clustersnapshot.ClusterSnapshot {
-			return testsnapshot.NewCustomTestSnapshotOrDie(b, store.NewDeltaSnapshotStore())
+			return testsnapshot.NewCustomTestSnapshotOrDie(b, store.NewDeltaSnapshotStore(16))
 		},
 	}
 	for snapshotName, snapshotFactory := range snapshots {
@@ -280,7 +280,7 @@ func BenchmarkFilterOutSchedulable(b *testing.B) {
 				}
 
 				clusterSnapshot := snapshotFactory()
-				if err := clusterSnapshot.SetClusterState(nodes, scheduledPods); err != nil {
+				if err := clusterSnapshot.SetClusterState(nodes, scheduledPods, nil, nil); err != nil {
 					assert.NoError(b, err)
 				}
 

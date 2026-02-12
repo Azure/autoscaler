@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -36,9 +37,13 @@ import (
 	"k8s.io/klog/v2"
 
 	"k8s.io/autoscaler/vertical-pod-autoscaler/common"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource/pod/patch"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/admission-controller/resource/pod/recommendation"
 	vpa_clientset "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/features"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target"
 	controllerfetcher "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target/controller_fetcher"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/inplace"
 	updater "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/logic"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/priority"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/limitrange"
@@ -70,6 +75,13 @@ var (
 	useAdmissionControllerStatus = flag.Bool("use-admission-controller-status", true,
 		"If true, updater will only evict pods when admission controller status is valid.")
 
+	inPlaceSkipDisruptionBudget = flag.Bool(
+		"in-place-skip-disruption-budget",
+		false,
+		"[ALPHA] If true, VPA updater skips disruption budget checks for in-place pod updates when all containers have NotRequired resize policy (or no policy defined) for both CPU and memory resources. "+
+			"Disruption budgets are still respected when any container has RestartContainer resize policy for any resource.",
+	)
+
 	namespace = os.Getenv("NAMESPACE")
 )
 
@@ -88,11 +100,14 @@ func main() {
 	leaderElection := defaultLeaderElectionConfiguration()
 	componentbaseoptions.BindLeaderElectionFlags(&leaderElection, pflag.CommandLine)
 
+	features.MutableFeatureGate.AddFlag(pflag.CommandLine)
+
 	kube_flag.InitFlags()
-	klog.V(1).InfoS("Vertical Pod Autoscaler Updater", "version", common.VerticalPodAutoscalerVersion)
+	klog.V(1).InfoS("Vertical Pod Autoscaler Updater", "version", common.VerticalPodAutoscalerVersion())
 
 	if len(commonFlags.VpaObjectNamespace) > 0 && len(commonFlags.IgnoredVpaObjectNamespaces) > 0 {
-		klog.Fatalf("--vpa-object-namespace and --ignored-vpa-object-namespaces are mutually exclusive and can't be set together.")
+		klog.ErrorS(nil, "--vpa-object-namespace and --ignored-vpa-object-namespaces are mutually exclusive and can't be set together.")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 
 	healthCheck := metrics.NewHealthCheck(*updaterInterval * 5)
@@ -105,7 +120,8 @@ func main() {
 	} else {
 		id, err := os.Hostname()
 		if err != nil {
-			klog.Fatalf("Unable to get hostname: %v", err)
+			klog.ErrorS(err, "Unable to get hostname")
+			klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 		}
 		id = id + "_" + string(uuid.NewUUID())
 
@@ -123,7 +139,8 @@ func main() {
 			},
 		)
 		if err != nil {
-			klog.Fatalf("Unable to create leader election lock: %v", err)
+			klog.ErrorS(err, "Unable to create leader election lock")
+			klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 		}
 
 		leaderelection.RunOrDie(context.TODO(), leaderelection.LeaderElectionConfig{
@@ -163,10 +180,12 @@ func defaultLeaderElectionConfiguration() componentbaseconfig.LeaderElectionConf
 }
 
 func run(healthCheck *metrics.HealthCheck, commonFlag *common.CommonFlags) {
+	stopCh := make(chan struct{})
+	defer close(stopCh)
 	config := common.CreateKubeConfigOrDie(commonFlag.KubeConfig, float32(commonFlag.KubeApiQps), int(commonFlag.KubeApiBurst))
 	kubeClient := kube_client.NewForConfigOrDie(config)
 	vpaClient := vpa_clientset.NewForConfigOrDie(config)
-	factory := informers.NewSharedInformerFactory(kubeClient, defaultResyncPeriod)
+	factory := informers.NewSharedInformerFactoryWithOptions(kubeClient, defaultResyncPeriod, informers.WithNamespace(commonFlag.VpaObjectNamespace))
 	targetSelectorFetcher := target.NewVpaTargetSelectorFetcher(config, kubeClient, factory)
 	controllerFetcher := controllerfetcher.NewControllerFetcher(config, kubeClient, factory, scaleCacheEntryFreshnessTime, scaleCacheEntryLifetime, scaleCacheEntryJitterFactor)
 	var limitRangeCalculator limitrange.LimitRangeCalculator
@@ -175,12 +194,26 @@ func run(healthCheck *metrics.HealthCheck, commonFlag *common.CommonFlags) {
 		klog.ErrorS(err, "Failed to create limitRangeCalculator, falling back to not checking limits")
 		limitRangeCalculator = limitrange.NewNoopLimitsCalculator()
 	}
+
+	factory.Start(stopCh)
+	informerMap := factory.WaitForCacheSync(stopCh)
+	for kind, synced := range informerMap {
+		if !synced {
+			klog.ErrorS(nil, fmt.Sprintf("Could not sync cache for the %s informer", kind.String()))
+			klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+		}
+	}
+
 	admissionControllerStatusNamespace := status.AdmissionControllerStatusNamespace
 	if namespace != "" {
 		admissionControllerStatusNamespace = namespace
 	}
 
 	ignoredNamespaces := strings.Split(commonFlag.IgnoredVpaObjectNamespaces, ",")
+
+	recommendationProvider := recommendation.NewProvider(limitRangeCalculator, vpa_api_util.NewCappingRecommendationProcessor(limitRangeCalculator))
+
+	calculators := []patch.Calculator{inplace.NewResourceInPlaceUpdatesCalculator(recommendationProvider), inplace.NewInPlaceUpdatedCalculator()}
 
 	// TODO: use SharedInformerFactory in updater
 	updater, err := updater.NewUpdater(
@@ -191,6 +224,7 @@ func run(healthCheck *metrics.HealthCheck, commonFlag *common.CommonFlags) {
 		*evictionRateBurst,
 		*evictionToleranceFraction,
 		*useAdmissionControllerStatus,
+		*inPlaceSkipDisruptionBudget,
 		admissionControllerStatusNamespace,
 		vpa_api_util.NewCappingRecommendationProcessor(limitRangeCalculator),
 		priority.NewScalingDirectionPodEvictionAdmission(),
@@ -199,9 +233,11 @@ func run(healthCheck *metrics.HealthCheck, commonFlag *common.CommonFlags) {
 		priority.NewProcessor(),
 		commonFlag.VpaObjectNamespace,
 		ignoredNamespaces,
+		calculators,
 	)
 	if err != nil {
-		klog.Fatalf("Failed to create updater: %v", err)
+		klog.ErrorS(err, "Failed to create updater")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 
 	// Start updating health check endpoint.

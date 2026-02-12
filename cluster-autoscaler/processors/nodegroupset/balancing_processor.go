@@ -20,7 +20,7 @@ import (
 	"sort"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	"k8s.io/autoscaler/cluster-autoscaler/context"
+	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 
@@ -34,19 +34,19 @@ type BalancingNodeGroupSetProcessor struct {
 
 // FindSimilarNodeGroups returns a list of NodeGroups similar to the given one using the
 // BalancingNodeGroupSetProcessor's comparator function.
-func (b *BalancingNodeGroupSetProcessor) FindSimilarNodeGroups(context *context.AutoscalingContext, nodeGroup cloudprovider.NodeGroup,
+func (b *BalancingNodeGroupSetProcessor) FindSimilarNodeGroups(autoscalingCtx *ca_context.AutoscalingContext, nodeGroup cloudprovider.NodeGroup,
 	nodeInfosForGroups map[string]*framework.NodeInfo) ([]cloudprovider.NodeGroup, errors.AutoscalerError) {
 
 	result := []cloudprovider.NodeGroup{}
 	nodeGroupId := nodeGroup.Id()
 	nodeInfo, found := nodeInfosForGroups[nodeGroupId]
 	if !found {
-		return []cloudprovider.NodeGroup{}, errors.NewAutoscalerError(
+		return []cloudprovider.NodeGroup{}, errors.NewAutoscalerErrorf(
 			errors.InternalError,
 			"failed to find template node for node group %s",
 			nodeGroupId)
 	}
-	for _, ng := range context.CloudProvider.NodeGroups() {
+	for _, ng := range autoscalingCtx.CloudProvider.NodeGroups() {
 		ngId := ng.Id()
 		if ngId == nodeGroupId {
 			continue
@@ -76,7 +76,7 @@ func (b *BalancingNodeGroupSetProcessor) FindSimilarNodeGroups(context *context.
 // MaxSize of each group will be respected. If newNodes > total free capacity
 // of all NodeGroups it will be capped to total capacity. In particular if all
 // group already have MaxSize, empty list will be returned.
-func (b *BalancingNodeGroupSetProcessor) BalanceScaleUpBetweenGroups(context *context.AutoscalingContext, groups []cloudprovider.NodeGroup, newNodes int) ([]ScaleUpInfo, errors.AutoscalerError) {
+func (b *BalancingNodeGroupSetProcessor) BalanceScaleUpBetweenGroups(autoscalingCtx *ca_context.AutoscalingContext, groups []cloudprovider.NodeGroup, newNodes int) ([]ScaleUpInfo, errors.AutoscalerError) {
 	if len(groups) == 0 {
 		return []ScaleUpInfo{}, errors.NewAutoscalerError(
 			errors.InternalError, "Can't balance scale up between 0 groups")
@@ -88,7 +88,7 @@ func (b *BalancingNodeGroupSetProcessor) BalanceScaleUpBetweenGroups(context *co
 	for _, ng := range groups {
 		currentSize, err := ng.TargetSize()
 		if err != nil {
-			return []ScaleUpInfo{}, errors.NewAutoscalerError(
+			return []ScaleUpInfo{}, errors.NewAutoscalerErrorf(
 				errors.CloudProviderError,
 				"failed to get node group size: %v", err)
 		}

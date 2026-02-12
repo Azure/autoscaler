@@ -18,17 +18,15 @@ package orchestrator
 
 import (
 	"fmt"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	apiv1 "k8s.io/api/core/v1"
+	ca_context "k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	"k8s.io/klog/v2"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-	"k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
 	"k8s.io/autoscaler/cluster-autoscaler/observers/nodegroupchange"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroups/asyncnodegroups"
@@ -39,19 +37,19 @@ import (
 
 // ScaleUpExecutor scales up node groups.
 type scaleUpExecutor struct {
-	autoscalingContext         *context.AutoscalingContext
+	autoscalingCtx             *ca_context.AutoscalingContext
 	scaleStateNotifier         nodegroupchange.NodeGroupChangeObserver
 	asyncNodeGroupStateChecker asyncnodegroups.AsyncNodeGroupStateChecker
 }
 
 // New returns new instance of scale up executor.
 func newScaleUpExecutor(
-	autoscalingContext *context.AutoscalingContext,
+	autoscalingCtx *ca_context.AutoscalingContext,
 	scaleStateNotifier nodegroupchange.NodeGroupChangeObserver,
 	asyncNodeGroupStateChecker asyncnodegroups.AsyncNodeGroupStateChecker,
 ) *scaleUpExecutor {
 	return &scaleUpExecutor{
-		autoscalingContext:         autoscalingContext,
+		autoscalingCtx:             autoscalingCtx,
 		scaleStateNotifier:         scaleStateNotifier,
 		asyncNodeGroupStateChecker: asyncNodeGroupStateChecker,
 	}
@@ -67,7 +65,7 @@ func (e *scaleUpExecutor) ExecuteScaleUps(
 	now time.Time,
 	atomic bool,
 ) (errors.AutoscalerError, []cloudprovider.NodeGroup) {
-	options := e.autoscalingContext.AutoscalingOptions
+	options := e.autoscalingCtx.AutoscalingOptions
 	if options.ParallelScaleUp {
 		return e.executeScaleUpsParallel(scaleUpInfos, nodeInfos, now, atomic)
 	}
@@ -80,7 +78,7 @@ func (e *scaleUpExecutor) executeScaleUpsSync(
 	now time.Time,
 	atomic bool,
 ) (errors.AutoscalerError, []cloudprovider.NodeGroup) {
-	availableGPUTypes := e.autoscalingContext.CloudProvider.GetAvailableGPUTypes()
+	availableGPUTypes := e.autoscalingCtx.CloudProvider.GetAvailableGPUTypes()
 	for _, scaleUpInfo := range scaleUpInfos {
 		nodeInfo, ok := nodeInfos[scaleUpInfo.Group.Id()]
 		if !ok {
@@ -111,7 +109,7 @@ func (e *scaleUpExecutor) executeScaleUpsParallel(
 	errResults := make(chan errResult, scaleUpsLen)
 	var wg sync.WaitGroup
 	wg.Add(scaleUpsLen)
-	availableGPUTypes := e.autoscalingContext.CloudProvider.GetAvailableGPUTypes()
+	availableGPUTypes := e.autoscalingCtx.CloudProvider.GetAvailableGPUTypes()
 	for _, scaleUpInfo := range scaleUpInfos {
 		go func(info nodegroupset.ScaleUpInfo) {
 			defer wg.Done()
@@ -138,7 +136,7 @@ func (e *scaleUpExecutor) executeScaleUpsParallel(
 			failedNodeGroups[i] = result.info.Group
 			scaleUpErrors[i] = result.err
 		}
-		return combineConcurrentScaleUpErrors(scaleUpErrors), failedNodeGroups
+		return errors.Combine(scaleUpErrors), failedNodeGroups
 	}
 	return nil, nil
 }
@@ -161,14 +159,14 @@ func (e *scaleUpExecutor) executeScaleUp(
 	now time.Time,
 	atomic bool,
 ) errors.AutoscalerError {
-	gpuConfig := e.autoscalingContext.CloudProvider.GetNodeGpuConfig(nodeInfo.Node())
+	gpuConfig := e.autoscalingCtx.CloudProvider.GetNodeGpuConfig(nodeInfo.Node())
 	gpuResourceName, gpuType := gpu.GetGpuInfoForMetrics(gpuConfig, availableGPUTypes, nodeInfo.Node(), nil)
 	klog.V(0).Infof("Scale-up: setting group %s size to %d", info.Group.Id(), info.NewSize)
-	e.autoscalingContext.LogRecorder.Eventf(apiv1.EventTypeNormal, "ScaledUpGroup",
+	e.autoscalingCtx.LogRecorder.Eventf(apiv1.EventTypeNormal, "ScaledUpGroup",
 		"Scale-up: setting group %s size to %d instead of %d (max: %d)", info.Group.Id(), info.NewSize, info.CurrentSize, info.MaxSize)
 	increase := info.NewSize - info.CurrentSize
 	if err := e.increaseSize(info.Group, increase, atomic); err != nil {
-		e.autoscalingContext.LogRecorder.Eventf(apiv1.EventTypeWarning, "FailedToScaleUpGroup", "Scale-up failed for group %s: %v", info.Group.Id(), err)
+		e.autoscalingCtx.LogRecorder.Eventf(apiv1.EventTypeWarning, "FailedToScaleUpGroup", "Scale-up failed for group %s: %v", info.Group.Id(), err)
 		aerr := errors.ToAutoscalerError(errors.CloudProviderError, err).AddPrefix("failed to increase node group size: ")
 		e.scaleStateNotifier.RegisterFailedScaleUp(info.Group, string(aerr.Type()), aerr.Error(), gpuResourceName, gpuType, now)
 		return aerr
@@ -183,68 +181,9 @@ func (e *scaleUpExecutor) executeScaleUp(
 	}
 	e.scaleStateNotifier.RegisterScaleUp(info.Group, increase, time.Now())
 	metrics.RegisterScaleUp(increase, gpuResourceName, gpuType)
-	e.autoscalingContext.LogRecorder.Eventf(apiv1.EventTypeNormal, "ScaledUpGroup",
+	e.autoscalingCtx.LogRecorder.Eventf(apiv1.EventTypeNormal, "ScaledUpGroup",
 		"Scale-up: group %s size set to %d instead of %d (max: %d)", info.Group.Id(), info.NewSize, info.CurrentSize, info.MaxSize)
 	return nil
-}
-
-func combineConcurrentScaleUpErrors(errs []errors.AutoscalerError) errors.AutoscalerError {
-	if len(errs) == 0 {
-		return nil
-	}
-	if len(errs) == 1 {
-		return errs[0]
-	}
-	uniqueMessages := make(map[string]bool)
-	uniqueTypes := make(map[errors.AutoscalerErrorType]bool)
-	for _, err := range errs {
-		uniqueTypes[err.Type()] = true
-		uniqueMessages[err.Error()] = true
-	}
-	if len(uniqueTypes) == 1 && len(uniqueMessages) == 1 {
-		return errs[0]
-	}
-	// sort to stabilize the results and easier log aggregation
-	sort.Slice(errs, func(i, j int) bool {
-		errA := errs[i]
-		errB := errs[j]
-		if errA.Type() == errB.Type() {
-			return errs[i].Error() < errs[j].Error()
-		}
-		return errA.Type() < errB.Type()
-	})
-	firstErr := errs[0]
-	printErrorTypes := len(uniqueTypes) > 1
-	message := formatMessageFromConcurrentErrors(errs, printErrorTypes)
-	return errors.NewAutoscalerError(firstErr.Type(), message)
-}
-
-func formatMessageFromConcurrentErrors(errs []errors.AutoscalerError, printErrorTypes bool) string {
-	firstErr := errs[0]
-	var builder strings.Builder
-	builder.WriteString(firstErr.Error())
-	builder.WriteString(" ...and other concurrent errors: [")
-	formattedErrs := map[errors.AutoscalerError]bool{
-		firstErr: true,
-	}
-	for _, err := range errs {
-		if _, has := formattedErrs[err]; has {
-			continue
-		}
-		formattedErrs[err] = true
-		var message string
-		if printErrorTypes {
-			message = fmt.Sprintf("[%s] %s", err.Type(), err.Error())
-		} else {
-			message = err.Error()
-		}
-		if len(formattedErrs) > 2 {
-			builder.WriteString(", ")
-		}
-		builder.WriteString(fmt.Sprintf("%q", message))
-	}
-	builder.WriteString("]")
-	return builder.String()
 }
 
 // Checks if all groups are scaled only once.
@@ -253,7 +192,7 @@ func checkUniqueNodeGroups(scaleUpInfos []nodegroupset.ScaleUpInfo) errors.Autos
 	uniqueGroups := make(map[string]bool)
 	for _, info := range scaleUpInfos {
 		if uniqueGroups[info.Group.Id()] {
-			return errors.NewAutoscalerError(
+			return errors.NewAutoscalerErrorf(
 				errors.InternalError,
 				"assertion failure: detected group double scaling: %s", info.Group.Id(),
 			)
