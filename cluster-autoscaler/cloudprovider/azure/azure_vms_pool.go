@@ -48,6 +48,9 @@ type VMPool struct {
 
 	minSize int
 	maxSize int
+
+	labels map[string]string
+	taints string
 }
 
 // NewVMPool creates a new VMPool - a pool of standalone VMs of a single size.
@@ -65,6 +68,8 @@ func NewVMPool(spec *dynamic.NodeGroupSpec, am *AzureManager, agentPoolName stri
 		agentPoolName: agentPoolName,
 		minSize:       spec.MinSize,
 		maxSize:       spec.MaxSize,
+		labels:        spec.Labels,
+		taints:        spec.Taints,
 	}
 	return nodepool, nil
 }
@@ -439,7 +444,6 @@ func (vmPool *VMPool) getVMsFromCache(op skipOption) ([]compute.VirtualMachine, 
 
 		filteredVMs = append(filteredVMs, vm)
 	}
-
 	return filteredVMs, nil
 }
 
@@ -472,9 +476,7 @@ func (vmPool *VMPool) TemplateNodeInfo() (*schedulerframework.NodeInfo, error) {
 		return nil, err
 	}
 
-	inputLabels := map[string]string{}
-	inputTaints := ""
-	template, err := buildNodeTemplateFromVMPool(ap, vmPool.manager.config.Location, vmPool.sku, inputLabels, inputTaints)
+	template, err := buildNodeTemplateFromVMPool(ap, vmPool.manager.config.Location, vmPool.sku, vmPool.labels, vmPool.taints)
 	if err != nil {
 		return nil, err
 	}
