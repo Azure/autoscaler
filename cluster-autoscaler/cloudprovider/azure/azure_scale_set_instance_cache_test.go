@@ -432,7 +432,7 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 	}
 	status = scaleSet.instanceStatusFromVM(vm)
 	assert.NotNil(t, status)
-	assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+	assert.Equal(t, cloudprovider.InstanceRunning, status.State)
 	scaleSet.enableFastDeleteOnFailedProvisioning = false
 
 	// Enabled EnableFastDelete, deallocate mode, not running power state
@@ -449,7 +449,8 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 	}
 	status = scaleSet.instanceStatusFromVM(vm)
 	assert.NotNil(t, status)
-	assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+	assert.Equal(t, cloudprovider.InstanceCreating, status.State)
+	assert.NotEmpty(t, status.ErrorInfo)
 	scaleSet.enableFastDeleteOnFailedProvisioning = false
 
 	scaleSet.scaleDownPolicy = deallocate.Delete
