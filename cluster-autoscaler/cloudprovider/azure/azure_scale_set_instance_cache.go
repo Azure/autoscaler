@@ -277,15 +277,15 @@ func (scaleSet *ScaleSet) instanceStatusFromVM(vm *armcompute.VirtualMachineScal
 	}
 
 	// now check power state
-	if vm.InstanceView != nil && vm.InstanceView.Statuses != nil {
-		statuses := *vm.InstanceView.Statuses
+	if vm.Properties.InstanceView != nil && vm.Properties.InstanceView.Statuses != nil {
+		statuses := vm.Properties.InstanceView.Statuses
 
 		for _, s := range statuses {
-			state := to.String(s.Code)
+			state := ptr.Deref(s.Code, "")
 			// set the state to deallocated/deallocating based on their running state if provisioning is succeeded.
 			// This is to avoid the weird states with Failed VMs which can fail all API calls.
 			// This information is used to build instanceCache in CA.
-			if *vm.ProvisioningState == string(compute.GalleryProvisioningStateSucceeded) {
+			if ptr.Deref(vm.Properties.ProvisioningState, "") == string(armcompute.GalleryProvisioningStateSucceeded) {
 				if powerStateDeallocated(state) {
 					status.State = cloudprovider.InstanceDeallocated
 				} else if powerStateDeallocating(state) {

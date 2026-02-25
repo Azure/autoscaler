@@ -17,22 +17,54 @@ limitations under the License.
 package azure
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
-	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v6"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
-	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmclient/mockvmclient"
-	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssclient/mockvmssclient"
-	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssvmclient/mockvmssvmclient"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachineclient/mock_virtualmachineclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachinescalesetclient/mock_virtualmachinescalesetclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachinescalesetvmclient/mock_virtualmachinescalesetvmclient"
 )
+
+// fakeSuccessHandler implements runtime.PollingHandler and always reports done with no error.
+type fakeSuccessHandler[T any] struct{}
+
+func (f *fakeSuccessHandler[T]) Done() bool                                    { return true }
+func (f *fakeSuccessHandler[T]) Poll(ctx context.Context) (*http.Response, error) { return nil, nil }
+func (f *fakeSuccessHandler[T]) Result(ctx context.Context, out *T) error      { return nil }
+
+// fakeErrorHandler implements runtime.PollingHandler and always reports done with an error.
+type fakeErrorHandler[T any] struct {
+	err error
+}
+
+func (f *fakeErrorHandler[T]) Done() bool                                    { return true }
+func (f *fakeErrorHandler[T]) Poll(ctx context.Context) (*http.Response, error) { return nil, nil }
+func (f *fakeErrorHandler[T]) Result(ctx context.Context, out *T) error      { return f.err }
+
+func newFakeStartPoller(handler runtime.PollingHandler[armcompute.VirtualMachineScaleSetsClientStartResponse]) *runtime.Poller[armcompute.VirtualMachineScaleSetsClientStartResponse] {
+	resp := &http.Response{Header: map[string][]string{"Fake-Poller-Status": {"Done"}}}
+	p, _ := runtime.NewPoller(resp, runtime.Pipeline{},
+		&runtime.NewPollerOptions[armcompute.VirtualMachineScaleSetsClientStartResponse]{Handler: handler})
+	return p
+}
+
+func newFakeDeallocatePoller(handler runtime.PollingHandler[armcompute.VirtualMachineScaleSetsClientDeallocateResponse]) *runtime.Poller[armcompute.VirtualMachineScaleSetsClientDeallocateResponse] {
+	resp := &http.Response{Header: map[string][]string{"Fake-Poller-Status": {"Done"}}}
+	p, _ := runtime.NewPoller(resp, runtime.Pipeline{},
+		&runtime.NewPollerOptions[armcompute.VirtualMachineScaleSetsClientDeallocateResponse]{Handler: handler})
+	return p
+}
 
 func TestDeallocateNodes(t *testing.T) {
 	ctrl := gomock.NewController(t)
@@ -42,32 +74,32 @@ func TestDeallocateNodes(t *testing.T) {
 	var vmssCapacity int64 = 3
 	cases := []struct {
 		name              string
-		orchestrationMode compute.OrchestrationMode
+		orchestrationMode armcompute.OrchestrationMode
 		enableForceDelete bool
 		scaleDownPolicy   deallocate.ScaleDownPolicy
 	}{
 		{
 			name:              "uniform, force delete enabled, deallocate mode",
-			orchestrationMode: compute.Uniform,
+			orchestrationMode: armcompute.OrchestrationModeUniform,
 			enableForceDelete: true,
 			scaleDownPolicy:   deallocate.Deallocate,
 		},
 		{
 			name:              "uniform, force delete disabled, deallocate mode",
-			orchestrationMode: compute.Uniform,
+			orchestrationMode: armcompute.OrchestrationModeUniform,
 			enableForceDelete: false,
 			scaleDownPolicy:   deallocate.Deallocate,
 		},
 		/* Flex + Deallocate is not supported yet
 		{
 			name:              "flexible, force delete enabled, deallocate mode",
-			orchestrationMode: compute.Flexible,
+			orchestrationMode: armcompute.OrchestrationModeFlexible,
 			enableForceDelete: true,
 			scaleDownPolicy:   deallocate.Deallocate,
 		},
 		{
 			name:              "flexible, force delete disabled, deallocate mode",
-			orchestrationMode: compute.Flexible,
+			orchestrationMode: armcompute.OrchestrationModeFlexible,
 			enableForceDelete: false,
 			scaleDownPolicy:   deallocate.Deallocate,
 		},
@@ -87,28 +119,28 @@ func TestDeallocateNodes(t *testing.T) {
 			manager.config.EnableForceDelete = enableForceDelete
 			expectedScaleSets := newTestVMSSList(vmssCapacity, vmssName, "eastus", orchMode)
 
-			mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
+			mockVMSSClient := mock_virtualmachinescalesetclient.NewMockInterface(ctrl)
 			mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).Times(2)
 
+			mockDeleteClient := NewMockVMSSDeleteClient(ctrl)
 			if scaleDownPolicy == deallocate.Delete {
-				mockVMSSClient.EXPECT().DeleteInstancesAsync(gomock.Any(), manager.config.ResourceGroup, gomock.Any(), gomock.Any(), enableForceDelete).Return(nil, nil)
-				mockVMSSClient.EXPECT().WaitForDeleteInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
+				mockDeleteClient.EXPECT().BeginDeleteInstances(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil)
 			} else {
-				mockVMSSClient.EXPECT().DeallocateInstancesAsync(gomock.Any(), manager.config.ResourceGroup, gomock.Any(), gomock.Any()).Return(nil, nil)
-				mockVMSSClient.EXPECT().WaitForDeallocateInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
+				mockDeleteClient.EXPECT().BeginDeallocate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil)
 			}
 
 			manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+			manager.azClient.vmssClientForDelete = mockDeleteClient
 
-			mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-			mockVMClient := mockvmclient.NewMockInterface(ctrl)
+			mockVMSSVMClient := mock_virtualmachinescalesetvmclient.NewMockInterface(ctrl)
+			mockVMClient := mock_virtualmachineclient.NewMockInterface(ctrl)
 
-			if orchMode == compute.Uniform {
-				mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+			if orchMode == armcompute.OrchestrationModeUniform {
+				mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), manager.config.ResourceGroup, "test-asg").Return(expectedVMSSVMs, nil).AnyTimes()
 				manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
 			} else {
 				manager.config.EnableVmssFlexNodes = true
-				mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), "test-asg").Return(expectedVMs, nil).AnyTimes()
+				mockVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedVMs, nil).AnyTimes()
 				manager.azClient.virtualMachinesClient = mockVMClient
 			}
 
@@ -157,32 +189,32 @@ func TestDeallocateNodes(t *testing.T) {
 
 			mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
 
-			if orchMode == compute.Uniform {
+			if orchMode == armcompute.OrchestrationModeUniform {
 				if scaleDownPolicy == deallocate.Delete {
-					expectedVMSSVMs[0].ProvisioningState = to.StringPtr(provisioningStateDeleting)
-					expectedVMSSVMs[2].ProvisioningState = to.StringPtr(provisioningStateDeleting)
+					expectedVMSSVMs[0].Properties.ProvisioningState = ptr.To(VMProvisioningStateDeleting)
+					expectedVMSSVMs[2].Properties.ProvisioningState = ptr.To(VMProvisioningStateDeleting)
 				} else {
 					// DeleteNodes above waits for results in a goroutine, and deallocate implementation (waitForDeallocateInstancesResult)
 					// currently accesses cache and adjusts provisioning state directly, so need to lock the instanceMutex to avoid data races
 					// (Locks around scaleSet.lastInstanceRefresh below are added for the same reason)
 					scaleSet.instanceMutex.Lock()
-					expectedVMSSVMs[0].ProvisioningState = to.StringPtr(provisioningStateSucceeded)
-					expectedVMSSVMs[2].ProvisioningState = to.StringPtr(provisioningStateSucceeded)
-					expectedVMSSVMs[0].InstanceView = &compute.VirtualMachineScaleSetVMInstanceView{Statuses: &[]compute.InstanceViewStatus{{Code: to.StringPtr(vmPowerStateDeallocating)}}}
-					expectedVMSSVMs[2].InstanceView = &compute.VirtualMachineScaleSetVMInstanceView{Statuses: &[]compute.InstanceViewStatus{{Code: to.StringPtr(vmPowerStateDeallocating)}}}
+					expectedVMSSVMs[0].Properties.ProvisioningState = ptr.To(provisioningStateSucceeded)
+					expectedVMSSVMs[2].Properties.ProvisioningState = ptr.To(provisioningStateSucceeded)
+					expectedVMSSVMs[0].Properties.InstanceView = &armcompute.VirtualMachineScaleSetVMInstanceView{Statuses: []*armcompute.InstanceViewStatus{{Code: ptr.To(vmPowerStateDeallocating)}}}
+					expectedVMSSVMs[2].Properties.InstanceView = &armcompute.VirtualMachineScaleSetVMInstanceView{Statuses: []*armcompute.InstanceViewStatus{{Code: ptr.To(vmPowerStateDeallocating)}}}
 					scaleSet.instanceMutex.Unlock()
 
 				}
-				mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, "test-asg", gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+				mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), manager.config.ResourceGroup, "test-asg").Return(expectedVMSSVMs, nil).AnyTimes()
 			} else {
 				if scaleDownPolicy == deallocate.Delete {
-					expectedVMs[0].ProvisioningState = to.StringPtr(provisioningStateDeleting)
-					expectedVMs[2].ProvisioningState = to.StringPtr(provisioningStateDeleting)
+					expectedVMs[0].Properties.ProvisioningState = ptr.To(VMProvisioningStateDeleting)
+					expectedVMs[2].Properties.ProvisioningState = ptr.To(VMProvisioningStateDeleting)
 				} else {
 					// Flex + Deallocate is not supported yet; is not tested here, fail just in case
 					assert.Fail(t, "flexible orchestration mode does not support deallocate")
 				}
-				mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), "test-asg").Return(expectedVMs, nil).AnyTimes()
+				mockVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedVMs, nil).AnyTimes()
 			}
 
 			err = manager.forceRefresh()
@@ -225,13 +257,8 @@ func TestDeallocateNodes(t *testing.T) {
 	}
 }
 
-func TestDeallocateModeWaitForStartInstances(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
+func TestWaitForStartInstances(t *testing.T) {
 	provider := newTestProvider(t)
-	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
-	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 
 	expectedVMSSVMs := newTestVMSSVMList(3)
 	var instances []cloudprovider.Instance
@@ -248,33 +275,119 @@ func TestDeallocateModeWaitForStartInstances(t *testing.T) {
 		manager:         provider.azureManager,
 		minSize:         1,
 		maxSize:         5,
-		InstanceCache:   InstanceCache{instanceCache: instances},
+		InstanceCache:   InstanceCache{instanceCache: instances, instancesRefreshPeriod: defaultVmssInstancesRefreshPeriod},
 		scaleDownPolicy: deallocate.Deallocate,
 	}
 	asg.Name = testASG
-	resp := &http.Response{StatusCode: 200}
 
-	t.Run("when vmssVM client returns no error on StartInstancesAsync()", func(t *testing.T) {
-		requiredInstanceIDs := &compute.VirtualMachineScaleSetVMInstanceRequiredIDs{}
-		mockVMSSClient.EXPECT().WaitForStartInstancesResult(gomock.Any(), gomock.Any(),
-			asg.manager.config.ResourceGroup).Return(resp, nil).Times(1)
-		asg.waitForStartInstances(nil, requiredInstanceIDs)
+	t.Run("success: cache stays valid", func(t *testing.T) {
+		asg.instanceMutex.Lock()
+		asg.lastInstanceRefresh = time.Now()
+		asg.instanceMutex.Unlock()
+
+		poller := newFakeStartPoller(&fakeSuccessHandler[armcompute.VirtualMachineScaleSetsClientStartResponse]{})
+		asg.waitForStartInstances(poller, []*string{})
+
 		for _, vm := range asg.instanceCache {
-			assert.Equal(t, vm.Status.State, cloudprovider.InstanceRunning)
+			assert.Equal(t, cloudprovider.InstanceRunning, vm.Status.State)
 		}
+		// Cache should NOT be invalidated on success
+		asg.instanceMutex.Lock()
+		assert.False(t, asg.lastInstanceRefresh.IsZero(), "instanceCache should not be invalidated on success")
+		asg.instanceMutex.Unlock()
 	})
 
-	t.Run("when vmssVM client returns error on StartInstancesAsync() with previously deallocated instances", func(t *testing.T) {
-		mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-		provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+	t.Run("failure: cache is invalidated", func(t *testing.T) {
+		asg.instanceMutex.Lock()
+		asg.lastInstanceRefresh = time.Now()
+		asg.instanceMutex.Unlock()
 
-		mockVMSSClient.EXPECT().WaitForStartInstancesResult(gomock.Any(), gomock.Any(),
-			asg.manager.config.ResourceGroup).Return(resp, fmt.Errorf("some error message")).Times(1)
+		timeBeforeCall := time.Now()
+		poller := newFakeStartPoller(&fakeErrorHandler[armcompute.VirtualMachineScaleSetsClientStartResponse]{
+			err: fmt.Errorf("some start error"),
+		})
+		asg.waitForStartInstances(poller, []*string{})
 
-		asg.waitForStartInstances(nil, &compute.VirtualMachineScaleSetVMInstanceRequiredIDs{})
+		// On failure, instanceCache should be invalidated (lastInstanceRefresh set to the past)
+		asg.instanceMutex.Lock()
+		assert.True(t, asg.lastInstanceRefresh.Before(timeBeforeCall), "instanceCache should be invalidated on failure")
+		asg.instanceMutex.Unlock()
+	})
+}
 
-		// On failure with WaitForStartInstancesResult(), it invalidates the instanceCache.
-		lastInstanceCacheRefreshTime := asg.lastInstanceRefresh
-		assert.Lessf(t, lastInstanceCacheRefreshTime, time.Now(), "instanceCache should be invalidated")
+func TestWaitForDeallocateInstances(t *testing.T) {
+	provider := newTestProvider(t)
+
+	expectedVMSSVMs := newTestVMSSVMList(3)
+	var instances []cloudprovider.Instance
+	for _, vm := range expectedVMSSVMs {
+		instances = append(instances, cloudprovider.Instance{
+			Id: azurePrefix + *vm.ID,
+			Status: &cloudprovider.InstanceStatus{
+				State: cloudprovider.InstanceDeallocating,
+			},
+		})
+	}
+
+	instanceRefs := []*azureRef{
+		{Name: azurePrefix + *expectedVMSSVMs[0].ID},
+		{Name: azurePrefix + *expectedVMSSVMs[1].ID},
+		{Name: azurePrefix + *expectedVMSSVMs[2].ID},
+	}
+
+	asg := &ScaleSet{
+		manager:         provider.azureManager,
+		minSize:         1,
+		maxSize:         5,
+		InstanceCache:   InstanceCache{instanceCache: instances, instancesRefreshPeriod: defaultVmssInstancesRefreshPeriod},
+		scaleDownPolicy: deallocate.Deallocate,
+	}
+	asg.Name = testASG
+
+	t.Run("success: instances set to deallocated", func(t *testing.T) {
+		// Reset states to Deallocating
+		for i := range asg.instanceCache {
+			asg.instanceCache[i].Status.State = cloudprovider.InstanceDeallocating
+		}
+		asg.instanceMutex.Lock()
+		asg.lastInstanceRefresh = time.Now()
+		asg.instanceMutex.Unlock()
+
+		poller := newFakeDeallocatePoller(&fakeSuccessHandler[armcompute.VirtualMachineScaleSetsClientDeallocateResponse]{})
+		asg.waitForDeallocateInstances(poller, instanceRefs, []*string{})
+
+		for _, vm := range asg.instanceCache {
+			assert.Equal(t, cloudprovider.InstanceDeallocated, vm.Status.State)
+		}
+		// Cache should NOT be invalidated on success
+		asg.instanceMutex.Lock()
+		assert.False(t, asg.lastInstanceRefresh.IsZero(), "instanceCache should not be invalidated on success")
+		asg.instanceMutex.Unlock()
+	})
+
+	t.Run("failure: cache is invalidated", func(t *testing.T) {
+		// Reset states to Deallocating
+		for i := range asg.instanceCache {
+			asg.instanceCache[i].Status.State = cloudprovider.InstanceDeallocating
+		}
+		asg.instanceMutex.Lock()
+		asg.lastInstanceRefresh = time.Now()
+		asg.instanceMutex.Unlock()
+
+		timeBeforeCall := time.Now()
+		poller := newFakeDeallocatePoller(&fakeErrorHandler[armcompute.VirtualMachineScaleSetsClientDeallocateResponse]{
+			err: fmt.Errorf("some deallocate error"),
+		})
+		asg.waitForDeallocateInstances(poller, instanceRefs, []*string{})
+
+		// On failure, instanceCache should be invalidated (lastInstanceRefresh set to the past)
+		asg.instanceMutex.Lock()
+		assert.True(t, asg.lastInstanceRefresh.Before(timeBeforeCall), "instanceCache should be invalidated on failure")
+		asg.instanceMutex.Unlock()
+
+		// States should NOT have been changed to Deallocated
+		for _, vm := range asg.instanceCache {
+			assert.Equal(t, cloudprovider.InstanceDeallocating, vm.Status.State)
+		}
 	})
 }

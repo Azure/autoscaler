@@ -576,8 +576,10 @@ func (scaleSet *ScaleSet) startInstances(instances []*azureRef) error {
 		instanceIDs = append(instanceIDs, instanceID)
 	}
 
-	requiredIds := &compute.VirtualMachineScaleSetVMInstanceRequiredIDs{
-		InstanceIds: &instanceIDs,
+	// Convert []string to []*string
+	instanceIDPtrs := make([]*string, len(instanceIDs))
+	for i := range instanceIDs {
+		instanceIDPtrs[i] = &instanceIDs[i]
 	}
 
 	ctx, cancel := getContextWithTimeout(vmssContextTimeout)
@@ -585,12 +587,16 @@ func (scaleSet *ScaleSet) startInstances(instances []*azureRef) error {
 	resourceGroup := scaleSet.manager.config.ResourceGroup
 
 	scaleSet.instanceMutex.Lock()
-	klog.V(3).Infof("Calling virtualMachineScaleSetsClient.StartInstancesAsync(%v) for %s", requiredIds.InstanceIds, scaleSet.Name)
-	future, rerr := scaleSet.manager.azClient.virtualMachineScaleSetsClient.StartInstancesAsync(ctx, resourceGroup, commonNg.Id(), *requiredIds)
+	klog.V(3).Infof("Calling BeginStart(%v) for %s", instanceIDPtrs, scaleSet.Name)
+	poller, err := scaleSet.manager.azClient.vmssClientForDelete.BeginStart(ctx, resourceGroup, commonNg.Id(), &armcompute.VirtualMachineScaleSetsClientBeginStartOptions{
+		VMInstanceIDs: &armcompute.VirtualMachineScaleSetVMInstanceIDs{
+			InstanceIDs: instanceIDPtrs,
+		},
+	})
 	scaleSet.instanceMutex.Unlock()
-	if rerr != nil {
-		klog.Errorf("virtualMachineScaleSetsClient.StartInstancesAsync for instances %v for %s failed: %+v", requiredIds.InstanceIds, scaleSet.Name, rerr)
-		return rerr.Error()
+	if err != nil {
+		klog.Errorf("BeginStart for instances %v for %s failed: %+v", instanceIDPtrs, scaleSet.Name, err)
+		return err
 	}
 
 	// Proactively set the status of the instances to be running in cache
@@ -598,25 +604,26 @@ func (scaleSet *ScaleSet) startInstances(instances []*azureRef) error {
 		scaleSet.setInstanceStatusByProviderID(instance.Name, cloudprovider.InstanceStatus{State: cloudprovider.InstanceRunning})
 	}
 
-	go scaleSet.waitForStartInstances(future, requiredIds)
+	if poller != nil {
+		go scaleSet.waitForStartInstances(poller, instanceIDPtrs)
+	}
 	return nil
 }
 
-func (scaleSet *ScaleSet) waitForStartInstances(future *azure.Future, requiredIds *compute.VirtualMachineScaleSetVMInstanceRequiredIDs) {
+func (scaleSet *ScaleSet) waitForStartInstances(poller *runtime.Poller[armcompute.VirtualMachineScaleSetsClientStartResponse], instanceIDs []*string) {
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
-	klog.V(3).Infof("Calling virtualMachineScaleSetsClient.WaitForStartInstancesResult(%v) for %s", requiredIds.InstanceIds, scaleSet.Name)
-	httpResponse, err := scaleSet.manager.azClient.virtualMachineScaleSetsClient.WaitForStartInstancesResult(ctx, future, scaleSet.manager.config.ResourceGroup)
-	isSuccess, err := isSuccessHTTPResponse(httpResponse, err)
-	if isSuccess {
-		klog.V(3).Infof("WaitForStartInstancesResult(%v) for %s success", requiredIds.InstanceIds, scaleSet.Name)
+	klog.V(3).Infof("Calling PollUntilDone for Start(%v) for %s", instanceIDs, scaleSet.Name)
+	_, err := poller.PollUntilDone(ctx, nil)
+	if err == nil {
+		klog.V(3).Infof("PollUntilDone for Start(%v) for %s success", instanceIDs, scaleSet.Name)
 		// No need to invalidateInstanceCache because the states were proactively set to Running.
 		return
 	}
 
 	scaleSet.invalidateInstanceCache()
-	klog.Errorf("WaitForStartInstancesResult(%v) for %s failed with error: %v",
-		requiredIds.InstanceIds, scaleSet.Name, err)
+	klog.Errorf("PollUntilDone for Start(%v) for %s failed with error: %v",
+		instanceIDs, scaleSet.Name, err)
 }
 
 // deallocateInstances deallocates the given instances. All instances must be controlled by the same nodegroup.
@@ -668,8 +675,14 @@ func (scaleSet *ScaleSet) deallocateInstances(instances []*azureRef) error {
 		instanceIDs = append(instanceIDs, instanceID)
 	}
 
-	requiredIds := &compute.VirtualMachineScaleSetVMInstanceRequiredIDs{
-		InstanceIds: &instanceIDs,
+	// Convert []string to []*string
+	instanceIDPtrs := make([]*string, len(instanceIDs))
+	for i := range instanceIDs {
+		instanceIDPtrs[i] = &instanceIDs[i]
+	}
+
+	requiredIds := &armcompute.VirtualMachineScaleSetVMInstanceIDs{
+		InstanceIDs: instanceIDPtrs,
 	}
 
 	ctx, cancel := getContextWithTimeout(vmssContextTimeout)
@@ -677,12 +690,14 @@ func (scaleSet *ScaleSet) deallocateInstances(instances []*azureRef) error {
 	resourceGroup := scaleSet.manager.config.ResourceGroup
 
 	scaleSet.instanceMutex.Lock()
-	klog.V(3).Infof("Calling virtualMachineScaleSetsClient.DeallocateInstancesAsync(%v) for %s", requiredIds.InstanceIds, scaleSet.Name)
-	future, rerr := scaleSet.manager.azClient.virtualMachineScaleSetsClient.DeallocateInstancesAsync(ctx, resourceGroup, commonNg.Id(), *requiredIds)
+	klog.V(3).Infof("Calling BeginDeallocate(%v) for %s", requiredIds.InstanceIDs, scaleSet.Name)
+	poller, err := scaleSet.manager.azClient.vmssClientForDelete.BeginDeallocate(ctx, resourceGroup, commonNg.Id(), &armcompute.VirtualMachineScaleSetsClientBeginDeallocateOptions{
+		VMInstanceIDs: requiredIds,
+	})
 	scaleSet.instanceMutex.Unlock()
-	if rerr != nil {
-		klog.Errorf("virtualMachineScaleSetsClient.DeallocateInstancesAsync for instances %v for %s failed: %+v", requiredIds.InstanceIds, scaleSet.Name, rerr)
-		return rerr.Error()
+	if err != nil {
+		klog.Errorf("BeginDeallocate for instances %v for %s failed: %+v", requiredIds.InstanceIDs, scaleSet.Name, err)
+		return err
 	}
 
 	// Proactively set the status of the instances to be running in cache as deallocating. Status will change to deallocated on success
@@ -690,22 +705,23 @@ func (scaleSet *ScaleSet) deallocateInstances(instances []*azureRef) error {
 		scaleSet.setInstanceStatusByProviderID(instance.Name, cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocating})
 	}
 
-	go scaleSet.waitForDeallocateInstances(future, instancesToDeallocate, requiredIds)
+	if poller != nil {
+		go scaleSet.waitForDeallocateInstances(poller, instancesToDeallocate, requiredIds.InstanceIDs)
+	}
 
 	return nil
 }
 
-func (scaleSet *ScaleSet) waitForDeallocateInstances(future *azure.Future, instancesToDeallocate []*azureRef,
-	requiredIds *compute.VirtualMachineScaleSetVMInstanceRequiredIDs) {
+func (scaleSet *ScaleSet) waitForDeallocateInstances(poller *runtime.Poller[armcompute.VirtualMachineScaleSetsClientDeallocateResponse], instancesToDeallocate []*azureRef,
+	instanceIDs []*string) {
 	ctx, cancel := getContextWithTimeout(asyncContextTimeout)
 	defer cancel()
-	klog.V(3).Infof("Calling virtualMachineScaleSetsClient.WaitForDeallocateInstancesResult(%v) for %s", requiredIds.InstanceIds, scaleSet.Name)
-	httpResponse, err := scaleSet.manager.azClient.virtualMachineScaleSetsClient.WaitForDeallocateInstancesResult(ctx, future, scaleSet.manager.config.ResourceGroup)
-	isSuccess, err := isSuccessHTTPResponse(httpResponse, err)
-	if isSuccess {
-		klog.V(3).Infof("WaitForDeallocateInstancesResult(%v) for %s success",
-			requiredIds.InstanceIds, scaleSet.Name)
-		// Set the status of the instances to deallocated only if WaitForDeallocate Call Succeeds
+	klog.V(3).Infof("Calling PollUntilDone for Deallocate(%v) for %s", instanceIDs, scaleSet.Name)
+	_, err := poller.PollUntilDone(ctx, nil)
+	if err == nil {
+		klog.V(3).Infof("PollUntilDone for Deallocate(%v) for %s success",
+			instanceIDs, scaleSet.Name)
+		// Set the status of the instances to deallocated only if PollUntilDone succeeds
 		for _, instance := range instancesToDeallocate {
 			scaleSet.setInstanceStatusByProviderID(instance.Name, cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated})
 		}
@@ -713,7 +729,7 @@ func (scaleSet *ScaleSet) waitForDeallocateInstances(future *azure.Future, insta
 	}
 
 	scaleSet.invalidateInstanceCache()
-	klog.Errorf("WaitForDeallocateInstancesResult(%v) for %s failed with error: %v", requiredIds.InstanceIds, scaleSet.Name, err)
+	klog.Errorf("PollUntilDone for Deallocate(%v) for %s failed with error: %v", instanceIDs, scaleSet.Name, err)
 }
 
 // DeleteInstances deletes the given instances. All instances must be controlled by the same nodegroup.
