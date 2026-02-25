@@ -73,7 +73,7 @@ func (c *Checker) FilterOutUnremovable(autoscalingCtx *ca_context.AutoscalingCon
 	utilLogsQuota := klogx.NewLoggingQuota(20)
 
 	for _, node := range scaleDownCandidates {
-		if processNodeGroupDeallocate(context, node) {
+		if processNodeGroupDeallocate(autoscalingCtx, node) {
 			continue
 		}
 

@@ -1184,22 +1184,6 @@ func (scaleSet *ScaleSet) countDeallocatedDeallocatingInstances() (int, error) {
 	return len(deallocatedInstances) + len(deallocatingInstances), nil
 }
 
-func (scaleSet *ScaleSet) countDeallocatedDeallocatingInstances() (int, error) {
-	deallocatedInstances, err := scaleSet.getInstancesByState(cloudprovider.InstanceDeallocated)
-	if err != nil {
-		klog.Errorf("getScaleSetSize: error getInstancesByState for deallocated state for scaleSet %s,err: %v",
-			scaleSet.Name, err)
-		return -1, err
-	}
-	deallocatingInstances, err := scaleSet.getInstancesByState(cloudprovider.InstanceDeallocating)
-	if err != nil {
-		klog.Errorf("getScaleSetSize: error getInstancesByState for deallocating state for scaleSet %s,err: %v",
-			scaleSet.Name, err)
-		return -1, err
-	}
-	return len(deallocatedInstances) + len(deallocatingInstances), nil
-}
-
 func (scaleSet *ScaleSet) verifyNodeGroup(instance *azureRef, commonNgID string) error {
 	ng, err := scaleSet.manager.GetNodeGroupForInstance(instance)
 	if err != nil {
