@@ -18,22 +18,20 @@ package azure
 
 import (
 	"fmt"
-	"testing"
-
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v6"
-	"github.com/stretchr/testify/assert"
-
-	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
-
 	"net/http"
+	"testing"
 	"time"
 
-	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v6"
+	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
+	"k8s.io/utils/ptr"
+
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
-	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssclient/mockvmssclient"
-	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssvmclient/mockvmssvmclient"
-	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachinescalesetclient/mock_virtualmachinescalesetclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachinescalesetvmclient/mock_virtualmachinescalesetvmclient"
 )
 
 func testGetInstanceCacheWithStates(t *testing.T, vms []*armcompute.VirtualMachineScaleSetVM,
@@ -180,8 +178,8 @@ var (
 	currentTime, expiredTime             time.Time
 	provider                             *AzureCloudProvider
 	scaleSet                             *ScaleSet
-	mockVMSSVMClient                     *mockvmssvmclient.MockInterface
-	expectedVMSSVMs                      []compute.VirtualMachineScaleSetVM
+	mockVMSSVMClient                     *mock_virtualmachinescalesetvmclient.MockInterface
+	expectedVMSSVMs                      []*armcompute.VirtualMachineScaleSetVM
 	expectedStates                       []cloudprovider.InstanceState
 	instanceCache, expectedInstanceCache []cloudprovider.Instance
 )
@@ -241,11 +239,12 @@ func TestValidateInstanceCache(t *testing.T) {
 	instanceCacheLen := len(scaleSet.instanceCache)
 	expiredTime = scaleSet.lastInstanceRefresh.Add(-1 * scaleSet.instancesRefreshPeriod)
 	scaleSet.lastInstanceRefresh = expiredTime
-	throttledError := retry.Error{
-		HTTPStatusCode: http.StatusTooManyRequests,
+	throttledError := &azcore.ResponseError{
+		StatusCode:  http.StatusTooManyRequests,
+		RawResponse: &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{}},
 	}
-	mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, testASG, string(compute.InstanceViewTypesInstanceView)).Return(
-		[]compute.VirtualMachineScaleSetVM{}, &throttledError).Times(1)
+	mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), provider.azureManager.config.ResourceGroup, testASG).Return(
+		[]*armcompute.VirtualMachineScaleSetVM{}, throttledError).Times(1)
 	err = scaleSet.validateInstanceCache()
 	assert.NoError(t, err)
 	assert.Equalf(t, instanceCacheLen, len(scaleSet.instanceCache), "instanceCache must not be updated")
@@ -359,8 +358,8 @@ func TestBeforeEachNoInstanceCacheResetNeededHelper(t *testing.T) {
 	scaleSet = newTestScaleSet(provider.azureManager, testASG)
 	scaleSet.instancesRefreshPeriod = defaultVmssInstancesRefreshPeriod
 
-	expectedScaleSets := newTestVMSSList(3, testASG, "eastus", compute.Uniform)
-	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
+	expectedScaleSets := newTestVMSSList(3, testASG, "eastus", armcompute.OrchestrationModeUniform)
+	mockVMSSClient := mock_virtualmachinescalesetclient.NewMockInterface(ctrl)
 	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
 	mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
 
@@ -383,17 +382,17 @@ func TestBeforeEachNoInstanceCacheResetNeededHelper(t *testing.T) {
 func TestBeforeEachInstanceCacheResetNeededHelper(t *testing.T) {
 	expiredTime = scaleSet.lastInstanceRefresh.Add(-1 * scaleSet.instancesRefreshPeriod)
 	scaleSet.lastInstanceRefresh = expiredTime
-	mockVMSSVMClient = mockvmssvmclient.NewMockInterface(ctrl)
+	mockVMSSVMClient = mock_virtualmachinescalesetvmclient.NewMockInterface(ctrl)
 	provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
 	expectedVMSSVMs = newTestVMSSVMList(2)
-	expectedVMSSVMs[0].VirtualMachineScaleSetVMProperties.ProvisioningState = to.StringPtr(string(compute.GalleryProvisioningStateFailed))
-	expectedVMSSVMs[1].VirtualMachineScaleSetVMProperties.ProvisioningState = to.StringPtr(string(compute.GalleryProvisioningStateSucceeded))
-	expectedVMSSVMs[1].VirtualMachineScaleSetVMProperties.InstanceView = &compute.VirtualMachineScaleSetVMInstanceView{
-		Statuses: &[]compute.InstanceViewStatus{
-			{Code: to.StringPtr(vmPowerStateDeallocated)},
+	expectedVMSSVMs[0].Properties.ProvisioningState = ptr.To(string(armcompute.GalleryProvisioningStateFailed))
+	expectedVMSSVMs[1].Properties.ProvisioningState = ptr.To(string(armcompute.GalleryProvisioningStateSucceeded))
+	expectedVMSSVMs[1].Properties.InstanceView = &armcompute.VirtualMachineScaleSetVMInstanceView{
+		Statuses: []*armcompute.InstanceViewStatus{
+			{Code: ptr.To(vmPowerStateDeallocated)},
 		},
 	}
-	mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, testASG, string(compute.InstanceViewTypesInstanceView)).Return(
+	mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), provider.azureManager.config.ResourceGroup, testASG).Return(
 		expectedVMSSVMs, nil)
 	expectedStates = []cloudprovider.InstanceState{cloudprovider.InstanceFailed, cloudprovider.InstanceDeallocated}
 	expectedInstanceCache = testGetInstanceCacheWithStates(t, expectedVMSSVMs, expectedStates)
@@ -404,12 +403,12 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 
 	scaleSet.scaleDownPolicy = deallocate.Deallocate
 	// Disabled EnableFastDelete, deallocate mode, running power state
-	vm := &compute.VirtualMachineScaleSetVM{
-		VirtualMachineScaleSetVMProperties: &compute.VirtualMachineScaleSetVMProperties{
-			ProvisioningState: to.StringPtr(string(compute.GalleryProvisioningStateFailed)),
-			InstanceView: &compute.VirtualMachineScaleSetVMInstanceView{
-				Statuses: &[]compute.InstanceViewStatus{
-					{Code: to.StringPtr(vmPowerStateRunning)},
+	vm := &armcompute.VirtualMachineScaleSetVM{
+		Properties: &armcompute.VirtualMachineScaleSetVMProperties{
+			ProvisioningState: ptr.To(string(armcompute.GalleryProvisioningStateFailed)),
+			InstanceView: &armcompute.VirtualMachineScaleSetVMInstanceView{
+				Statuses: []*armcompute.InstanceViewStatus{
+					{Code: ptr.To(vmPowerStateRunning)},
 				},
 			},
 		},
@@ -420,12 +419,12 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 
 	// Enabled EnableFastDelete, deallocate mode, running power state
 	scaleSet.enableFastDeleteOnFailedProvisioning = true
-	vm = &compute.VirtualMachineScaleSetVM{
-		VirtualMachineScaleSetVMProperties: &compute.VirtualMachineScaleSetVMProperties{
-			ProvisioningState: to.StringPtr(string(compute.GalleryProvisioningStateFailed)),
-			InstanceView: &compute.VirtualMachineScaleSetVMInstanceView{
-				Statuses: &[]compute.InstanceViewStatus{
-					{Code: to.StringPtr(vmPowerStateRunning)},
+	vm = &armcompute.VirtualMachineScaleSetVM{
+		Properties: &armcompute.VirtualMachineScaleSetVMProperties{
+			ProvisioningState: ptr.To(string(armcompute.GalleryProvisioningStateFailed)),
+			InstanceView: &armcompute.VirtualMachineScaleSetVMInstanceView{
+				Statuses: []*armcompute.InstanceViewStatus{
+					{Code: ptr.To(vmPowerStateRunning)},
 				},
 			},
 		},
@@ -437,12 +436,12 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 
 	// Enabled EnableFastDelete, deallocate mode, not running power state
 	scaleSet.enableFastDeleteOnFailedProvisioning = true
-	vm = &compute.VirtualMachineScaleSetVM{
-		VirtualMachineScaleSetVMProperties: &compute.VirtualMachineScaleSetVMProperties{
-			ProvisioningState: to.StringPtr(string(compute.GalleryProvisioningStateFailed)),
-			InstanceView: &compute.VirtualMachineScaleSetVMInstanceView{
-				Statuses: &[]compute.InstanceViewStatus{
-					{Code: to.StringPtr(vmPowerStateStopped)},
+	vm = &armcompute.VirtualMachineScaleSetVM{
+		Properties: &armcompute.VirtualMachineScaleSetVMProperties{
+			ProvisioningState: ptr.To(string(armcompute.GalleryProvisioningStateFailed)),
+			InstanceView: &armcompute.VirtualMachineScaleSetVMInstanceView{
+				Statuses: []*armcompute.InstanceViewStatus{
+					{Code: ptr.To(vmPowerStateStopped)},
 				},
 			},
 		},
@@ -454,12 +453,12 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 
 	scaleSet.scaleDownPolicy = deallocate.Delete
 	// Disabled EnableFastDelete, delete mode, running power state
-	vm = &compute.VirtualMachineScaleSetVM{
-		VirtualMachineScaleSetVMProperties: &compute.VirtualMachineScaleSetVMProperties{
-			ProvisioningState: to.StringPtr(string(compute.GalleryProvisioningStateFailed)),
-			InstanceView: &compute.VirtualMachineScaleSetVMInstanceView{
-				Statuses: &[]compute.InstanceViewStatus{
-					{Code: to.StringPtr(vmPowerStateRunning)},
+	vm = &armcompute.VirtualMachineScaleSetVM{
+		Properties: &armcompute.VirtualMachineScaleSetVMProperties{
+			ProvisioningState: ptr.To(string(armcompute.GalleryProvisioningStateFailed)),
+			InstanceView: &armcompute.VirtualMachineScaleSetVMInstanceView{
+				Statuses: []*armcompute.InstanceViewStatus{
+					{Code: ptr.To(vmPowerStateRunning)},
 				},
 			},
 		},
@@ -470,12 +469,12 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 
 	// Enabled EnableFastDelete, delete mode, running power state
 	scaleSet.enableFastDeleteOnFailedProvisioning = true
-	vm = &compute.VirtualMachineScaleSetVM{
-		VirtualMachineScaleSetVMProperties: &compute.VirtualMachineScaleSetVMProperties{
-			ProvisioningState: to.StringPtr(string(compute.GalleryProvisioningStateFailed)),
-			InstanceView: &compute.VirtualMachineScaleSetVMInstanceView{
-				Statuses: &[]compute.InstanceViewStatus{
-					{Code: to.StringPtr(vmPowerStateRunning)},
+	vm = &armcompute.VirtualMachineScaleSetVM{
+		Properties: &armcompute.VirtualMachineScaleSetVMProperties{
+			ProvisioningState: ptr.To(string(armcompute.GalleryProvisioningStateFailed)),
+			InstanceView: &armcompute.VirtualMachineScaleSetVMInstanceView{
+				Statuses: []*armcompute.InstanceViewStatus{
+					{Code: ptr.To(vmPowerStateRunning)},
 				},
 			},
 		},
@@ -487,12 +486,12 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 
 	// Enabled EnableFastDelete, delete mode, not running power state
 	scaleSet.enableFastDeleteOnFailedProvisioning = true
-	vm = &compute.VirtualMachineScaleSetVM{
-		VirtualMachineScaleSetVMProperties: &compute.VirtualMachineScaleSetVMProperties{
-			ProvisioningState: to.StringPtr(string(compute.GalleryProvisioningStateFailed)),
-			InstanceView: &compute.VirtualMachineScaleSetVMInstanceView{
-				Statuses: &[]compute.InstanceViewStatus{
-					{Code: to.StringPtr(vmPowerStateStopped)},
+	vm = &armcompute.VirtualMachineScaleSetVM{
+		Properties: &armcompute.VirtualMachineScaleSetVMProperties{
+			ProvisioningState: ptr.To(string(armcompute.GalleryProvisioningStateFailed)),
+			InstanceView: &armcompute.VirtualMachineScaleSetVMInstanceView{
+				Statuses: []*armcompute.InstanceViewStatus{
+					{Code: ptr.To(vmPowerStateStopped)},
 				},
 			},
 		},
@@ -510,21 +509,21 @@ func TestInstanceStatusFromVMEnableFastDeleteOnCSEFailure(t *testing.T) {
 	// Enabled EnableFastDelete, delete mode, not running power state
 	scaleSet.enableFastDeleteOnFailedProvisioning = true
 	scaleSet.enableDetailedCSEMessage = true
-	vm := &compute.VirtualMachineScaleSetVM{
-		VirtualMachineScaleSetVMProperties: &compute.VirtualMachineScaleSetVMProperties{
-			ProvisioningState: to.StringPtr(string(compute.GalleryProvisioningStateFailed)),
-			InstanceView: &compute.VirtualMachineScaleSetVMInstanceView{
-				Statuses: &[]compute.InstanceViewStatus{
-					{Code: to.StringPtr(vmPowerStateStopped)},
+	vm := &armcompute.VirtualMachineScaleSetVM{
+		Properties: &armcompute.VirtualMachineScaleSetVMProperties{
+			ProvisioningState: ptr.To(string(armcompute.GalleryProvisioningStateFailed)),
+			InstanceView: &armcompute.VirtualMachineScaleSetVMInstanceView{
+				Statuses: []*armcompute.InstanceViewStatus{
+					{Code: ptr.To(vmPowerStateStopped)},
 				},
-				Extensions: &[]compute.VirtualMachineExtensionInstanceView{
+				Extensions: []*armcompute.VirtualMachineExtensionInstanceView{
 					{
-						Name: to.StringPtr(vmssCSEExtensionName),
-						Statuses: &[]compute.InstanceViewStatus{
+						Name: ptr.To(vmssCSEExtensionName),
+						Statuses: []*armcompute.InstanceViewStatus{
 							{
-								Level:   compute.Error,
-								Code:    to.StringPtr(vmssExtensionProvisioningFailed),
-								Message: to.StringPtr("Custom Script Extension failed to provision"),
+								Level:   ptr.To(armcompute.StatusLevelTypesError),
+								Code:    ptr.To(vmssExtensionProvisioningFailed),
+								Message: ptr.To("Custom Script Extension failed to provision"),
 							},
 						},
 					},
@@ -547,7 +546,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		scaleSet := newTestScaleSetDeallocateMode(provider.azureManager, "testScaleSet")
 
 		t.Run("provisioning state = failed, power state = starting", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateStarting)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateStarting)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -556,7 +555,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		})
 
 		t.Run("provisioning state = failed, power state = running", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateRunning)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateRunning)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -565,7 +564,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		})
 
 		t.Run("provisioning state = failed, power state = stopping", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateStopping)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateStopping)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -574,7 +573,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		})
 
 		t.Run("provisioning state = failed, power state = stopped", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateStopped)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateStopped)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -583,7 +582,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		})
 
 		t.Run("provisioning state = failed, power state = deallocated", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateDeallocated)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateDeallocated)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -592,7 +591,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		})
 
 		t.Run("provisioning state = failed, power state = unknown", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateUnknown)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateUnknown)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -606,7 +605,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		scaleSet := newTestScaleSetDeallocateModeWithFastDelete(provider.azureManager, "testScaleSet")
 
 		t.Run("provisioning state = failed, power state = starting", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateStarting)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateStarting)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -615,7 +614,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		})
 
 		t.Run("provisioning state = failed, power state = running", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateRunning)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateRunning)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -624,7 +623,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		})
 
 		t.Run("provisioning state = failed, power state = stopping", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateStopping)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateStopping)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -633,7 +632,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		})
 
 		t.Run("provisioning state = failed, power state = stopped", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateStopped)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateStopped)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -642,7 +641,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		})
 
 		t.Run("provisioning state = failed, power state = deallocated", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateDeallocated)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateDeallocated)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
@@ -651,7 +650,7 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 		})
 
 		t.Run("provisioning state = failed, power state = unknown", func(t *testing.T) {
-			vm := newVMObjectWithState(string(compute.GalleryProvisioningStateFailed), vmPowerStateUnknown)
+			vm := newVMObjectWithState(string(armcompute.GalleryProvisioningStateFailed), vmPowerStateUnknown)
 
 			status := scaleSet.instanceStatusFromVM(vm)
 
