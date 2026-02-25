@@ -39,18 +39,18 @@ import (
 // fakeSuccessHandler implements runtime.PollingHandler and always reports done with no error.
 type fakeSuccessHandler[T any] struct{}
 
-func (f *fakeSuccessHandler[T]) Done() bool                                    { return true }
+func (f *fakeSuccessHandler[T]) Done() bool                                       { return true }
 func (f *fakeSuccessHandler[T]) Poll(ctx context.Context) (*http.Response, error) { return nil, nil }
-func (f *fakeSuccessHandler[T]) Result(ctx context.Context, out *T) error      { return nil }
+func (f *fakeSuccessHandler[T]) Result(ctx context.Context, out *T) error         { return nil }
 
 // fakeErrorHandler implements runtime.PollingHandler and always reports done with an error.
 type fakeErrorHandler[T any] struct {
 	err error
 }
 
-func (f *fakeErrorHandler[T]) Done() bool                                    { return true }
+func (f *fakeErrorHandler[T]) Done() bool                                       { return true }
 func (f *fakeErrorHandler[T]) Poll(ctx context.Context) (*http.Response, error) { return nil, nil }
-func (f *fakeErrorHandler[T]) Result(ctx context.Context, out *T) error      { return f.err }
+func (f *fakeErrorHandler[T]) Result(ctx context.Context, out *T) error         { return f.err }
 
 func newFakeStartPoller(handler runtime.PollingHandler[armcompute.VirtualMachineScaleSetsClientStartResponse]) *runtime.Poller[armcompute.VirtualMachineScaleSetsClientStartResponse] {
 	resp := &http.Response{Header: map[string][]string{"Fake-Poller-Status": {"Done"}}}
