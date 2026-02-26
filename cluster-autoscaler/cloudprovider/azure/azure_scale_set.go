@@ -587,7 +587,7 @@ func (scaleSet *ScaleSet) startInstances(instances []*azureRef) error {
 	resourceGroup := scaleSet.manager.config.ResourceGroup
 
 	scaleSet.instanceMutex.Lock()
-	klog.V(3).Infof("Calling BeginStart(%v) for %s", instanceIDPtrs, scaleSet.Name)
+	klog.V(3).Infof("Calling BeginStart(%v) for %s", instanceIDs, scaleSet.Name)
 	poller, err := scaleSet.manager.azClient.vmssClientForDelete.BeginStart(ctx, resourceGroup, commonNg.Id(), &armcompute.VirtualMachineScaleSetsClientBeginStartOptions{
 		VMInstanceIDs: &armcompute.VirtualMachineScaleSetVMInstanceIDs{
 			InstanceIDs: instanceIDPtrs,
@@ -595,7 +595,7 @@ func (scaleSet *ScaleSet) startInstances(instances []*azureRef) error {
 	})
 	scaleSet.instanceMutex.Unlock()
 	if err != nil {
-		klog.Errorf("BeginStart for instances %v for %s failed: %+v", instanceIDPtrs, scaleSet.Name, err)
+		klog.Errorf("BeginStart for instances %v for %s failed: %+v", instanceIDs, scaleSet.Name, err)
 		return err
 	}
 
@@ -681,22 +681,20 @@ func (scaleSet *ScaleSet) deallocateInstances(instances []*azureRef) error {
 		instanceIDPtrs[i] = &instanceIDs[i]
 	}
 
-	requiredIds := &armcompute.VirtualMachineScaleSetVMInstanceIDs{
-		InstanceIDs: instanceIDPtrs,
-	}
-
 	ctx, cancel := getContextWithTimeout(vmssContextTimeout)
 	defer cancel()
 	resourceGroup := scaleSet.manager.config.ResourceGroup
 
 	scaleSet.instanceMutex.Lock()
-	klog.V(3).Infof("Calling BeginDeallocate(%v) for %s", requiredIds.InstanceIDs, scaleSet.Name)
+	klog.V(3).Infof("Calling BeginDeallocate(%v) for %s", instanceIDs, scaleSet.Name)
 	poller, err := scaleSet.manager.azClient.vmssClientForDelete.BeginDeallocate(ctx, resourceGroup, commonNg.Id(), &armcompute.VirtualMachineScaleSetsClientBeginDeallocateOptions{
-		VMInstanceIDs: requiredIds,
+		VMInstanceIDs: &armcompute.VirtualMachineScaleSetVMInstanceIDs{
+			InstanceIDs: instanceIDPtrs,
+		},
 	})
 	scaleSet.instanceMutex.Unlock()
 	if err != nil {
-		klog.Errorf("BeginDeallocate for instances %v for %s failed: %+v", requiredIds.InstanceIDs, scaleSet.Name, err)
+		klog.Errorf("BeginDeallocate for instances %v for %s failed: %+v", instanceIDs, scaleSet.Name, err)
 		return err
 	}
 
@@ -706,7 +704,7 @@ func (scaleSet *ScaleSet) deallocateInstances(instances []*azureRef) error {
 	}
 
 	if poller != nil {
-		go scaleSet.waitForDeallocateInstances(poller, instancesToDeallocate, requiredIds.InstanceIDs)
+		go scaleSet.waitForDeallocateInstances(poller, instancesToDeallocate, instanceIDPtrs)
 	}
 
 	return nil
