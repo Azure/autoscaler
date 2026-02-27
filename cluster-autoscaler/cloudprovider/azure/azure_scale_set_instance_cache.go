@@ -230,11 +230,7 @@ func (scaleSet *ScaleSet) instanceStatusFromVM(vm *compute.VirtualMachineScaleSe
 		status.State = cloudprovider.InstanceRunning
 
 		klog.V(3).Infof(
-			"VM %s reports failed provisioning state with power state: %s,  scale down mode: %s, eligible for fast delete: %s",
-			to.String(vm.ID),
-			powerState,
-			scaleSet.scaleDownPolicy,
-			strconv.FormatBool(scaleSet.enableFastDeleteOnFailedProvisioning))
+			"VM %s reports failed provisioning state with power state: %s,  scale down mode: %s, eligible for fast delete: %s", to.String(vm.ID), powerState, scaleSet.scaleDownPolicy, strconv.FormatBool(scaleSet.enableFastDeleteOnFailedProvisioning))
 		if scaleSet.enableFastDeleteOnFailedProvisioning {
 			// Provisioning can fail both during instance creation or after the instance is running.
 			// Per https://learn.microsoft.com/en-us/azure/virtual-machines/states-billing#provisioning-states,
