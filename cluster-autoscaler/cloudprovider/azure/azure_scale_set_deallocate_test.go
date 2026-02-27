@@ -257,7 +257,7 @@ func TestDeallocateNodes(t *testing.T) {
 	}
 }
 
-func TestWaitForStartInstances(t *testing.T) {
+func TestWaitForStartInstance(t *testing.T) {
 	provider := newTestProvider(t)
 
 	expectedVMSSVMs := newTestVMSSVMList(3)
@@ -286,7 +286,7 @@ func TestWaitForStartInstances(t *testing.T) {
 		asg.instanceMutex.Unlock()
 
 		poller := newFakeStartPoller(&fakeSuccessHandler[armcompute.VirtualMachineScaleSetsClientStartResponse]{})
-		asg.waitForStartInstances(poller, []*string{})
+		asg.waitForStartInstance(poller, "0")
 
 		for _, vm := range asg.instanceCache {
 			assert.Equal(t, cloudprovider.InstanceRunning, vm.Status.State)
@@ -306,7 +306,7 @@ func TestWaitForStartInstances(t *testing.T) {
 		poller := newFakeStartPoller(&fakeErrorHandler[armcompute.VirtualMachineScaleSetsClientStartResponse]{
 			err: fmt.Errorf("some start error"),
 		})
-		asg.waitForStartInstances(poller, []*string{})
+		asg.waitForStartInstance(poller, "0")
 
 		// On failure, instanceCache should be invalidated (lastInstanceRefresh set to the past)
 		asg.instanceMutex.Lock()

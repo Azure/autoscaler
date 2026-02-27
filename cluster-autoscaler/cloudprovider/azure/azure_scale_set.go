@@ -320,13 +320,13 @@ func (scaleSet *ScaleSet) setScaleSetSize(size int64, delta int) error {
 				if requiredInstances <= 0 {
 					break
 				}
-				instancesToStart := []*azureRef{{Name: instance.Id}}
-				err := scaleSet.startInstances(instancesToStart)
+				ref := &azureRef{Name: instance.Id}
+				err := scaleSet.startInstance(ref)
 				if err != nil {
-					klog.Errorf("Failed to start instances %v in scale set %q: %v", instancesToStart, scaleSet.Name, err)
+					klog.Errorf("Failed to start instance %s in scale set %q: %v", instance.Id, scaleSet.Name, err)
 					continue
 				}
-				klog.V(3).Infof("Successfully started instances %v in scale set %q", instancesToStart, scaleSet.Name)
+				klog.V(3).Infof("Successfully started instance %s in scale set %q", instance.Id, scaleSet.Name)
 				requiredInstances--
 			}
 		}
@@ -532,54 +532,30 @@ func (scaleSet *ScaleSet) waitForCreateOrUpdateInstances(poller *runtime.Poller[
 	klog.V(3).Infof("PollUntilDone for CreateOrUpdate(%s) success", scaleSet.Name)
 }
 
-// startInstances starts the given instances. All instances must be controlled by the same nodegroup.
-func (scaleSet *ScaleSet) startInstances(instances []*azureRef) error {
-	if len(instances) == 0 {
-		return nil
-	}
+// startInstance starts a single deallocated instance.
+func (scaleSet *ScaleSet) startInstance(instance *azureRef) error {
+	klog.V(3).Infof("Starting vmss instance %s", instance.Name)
 
-	klog.V(3).Infof("Starting vmss instances %v", instances)
-
-	commonNg, err := scaleSet.manager.GetNodeGroupForInstance(instances[0])
+	ng, err := scaleSet.manager.GetNodeGroupForInstance(instance)
 	if err != nil {
 		return err
 	}
 
-	instancesToStart := []*azureRef{}
-	for _, instance := range instances {
-		err = scaleSet.verifyNodeGroup(instance, commonNg.Id())
-		if err != nil {
-			return err
-		}
+	if err := scaleSet.verifyNodeGroup(instance, ng.Id()); err != nil {
+		return err
+	}
 
-		if cpi, found, err := scaleSet.getInstanceByProviderID(instance.Name); found && err == nil && cpi.Status != nil &&
-			cpi.Status.State == cloudprovider.InstanceRunning {
+	if cpi, found, err := scaleSet.getInstanceByProviderID(instance.Name); found && err == nil {
+		if cpi.Status != nil && cpi.Status.State == cloudprovider.InstanceRunning {
 			klog.V(3).Infof("Skipping starting instance %s as its current state is running", instance.Name)
-			continue
+			return nil
 		}
-		instancesToStart = append(instancesToStart, instance)
 	}
 
-	// nothing to delete
-	if len(instancesToStart) == 0 {
-		klog.V(3).Infof("No new instances eligible for starting, skipping")
-		return nil
-	}
-
-	instanceIDs := []string{}
-	for _, instance := range instancesToStart {
-		instanceID, err := getLastSegment(instance.Name)
-		if err != nil {
-			klog.Errorf("getLastSegment failed with error: %v", err)
-			return err
-		}
-		instanceIDs = append(instanceIDs, instanceID)
-	}
-
-	// Convert []string to []*string
-	instanceIDPtrs := make([]*string, len(instanceIDs))
-	for i := range instanceIDs {
-		instanceIDPtrs[i] = &instanceIDs[i]
+	instanceID, err := getLastSegment(instance.Name)
+	if err != nil {
+		klog.Errorf("getLastSegment failed with error: %v", err)
+		return err
 	}
 
 	ctx, cancel := getContextWithTimeout(vmssContextTimeout)
@@ -587,43 +563,42 @@ func (scaleSet *ScaleSet) startInstances(instances []*azureRef) error {
 	resourceGroup := scaleSet.manager.config.ResourceGroup
 
 	scaleSet.instanceMutex.Lock()
-	klog.V(3).Infof("Calling BeginStart(%v) for %s", instanceIDs, scaleSet.Name)
-	poller, err := scaleSet.manager.azClient.vmssClientForDelete.BeginStart(ctx, resourceGroup, commonNg.Id(), &armcompute.VirtualMachineScaleSetsClientBeginStartOptions{
+	klog.V(3).Infof("Calling BeginStart(%s) for %s", instanceID, scaleSet.Name)
+	opts := &armcompute.VirtualMachineScaleSetsClientBeginStartOptions{
 		VMInstanceIDs: &armcompute.VirtualMachineScaleSetVMInstanceIDs{
-			InstanceIDs: instanceIDPtrs,
+			InstanceIDs: []*string{&instanceID},
 		},
-	})
+	}
+	poller, err := scaleSet.manager.azClient.vmssClientForDelete.BeginStart(ctx, resourceGroup, ng.Id(), opts)
 	scaleSet.instanceMutex.Unlock()
 	if err != nil {
-		klog.Errorf("BeginStart for instances %v for %s failed: %+v", instanceIDs, scaleSet.Name, err)
+		klog.Errorf("BeginStart for instance %s for %s failed: %+v", instanceID, scaleSet.Name, err)
 		return err
 	}
 
-	// Proactively set the status of the instances to be running in cache
-	for _, instance := range instancesToStart {
-		scaleSet.setInstanceStatusByProviderID(instance.Name, cloudprovider.InstanceStatus{State: cloudprovider.InstanceRunning})
-	}
+	// Proactively set the status of the instance to running in cache
+	scaleSet.setInstanceStatusByProviderID(instance.Name, cloudprovider.InstanceStatus{State: cloudprovider.InstanceRunning})
 
 	if poller != nil {
-		go scaleSet.waitForStartInstances(poller, instanceIDPtrs)
+		go scaleSet.waitForStartInstance(poller, instanceID)
 	}
 	return nil
 }
 
-func (scaleSet *ScaleSet) waitForStartInstances(poller *runtime.Poller[armcompute.VirtualMachineScaleSetsClientStartResponse], instanceIDs []*string) {
+func (scaleSet *ScaleSet) waitForStartInstance(poller *runtime.Poller[armcompute.VirtualMachineScaleSetsClientStartResponse], instanceID string) {
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
-	klog.V(3).Infof("Calling PollUntilDone for Start(%v) for %s", instanceIDs, scaleSet.Name)
+	klog.V(3).Infof("Calling PollUntilDone for Start(%s) for %s", instanceID, scaleSet.Name)
 	_, err := poller.PollUntilDone(ctx, nil)
 	if err == nil {
-		klog.V(3).Infof("PollUntilDone for Start(%v) for %s success", instanceIDs, scaleSet.Name)
-		// No need to invalidateInstanceCache because the states were proactively set to Running.
+		klog.V(3).Infof("PollUntilDone for Start(%s) for %s success", instanceID, scaleSet.Name)
+		// No need to invalidateInstanceCache because the state was proactively set to Running.
 		return
 	}
 
 	scaleSet.invalidateInstanceCache()
-	klog.Errorf("PollUntilDone for Start(%v) for %s failed with error: %v",
-		instanceIDs, scaleSet.Name, err)
+	klog.Errorf("PollUntilDone for Start(%s) for %s failed with error: %v",
+		instanceID, scaleSet.Name, err)
 }
 
 // deallocateInstances deallocates the given instances. All instances must be controlled by the same nodegroup.
