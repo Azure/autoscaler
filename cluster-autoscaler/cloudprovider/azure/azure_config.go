@@ -147,8 +147,8 @@ func BuildAzureConfig(configReader io.Reader) (*Config, error) {
 	cfg.VMType = providerazureconsts.VMTypeVMSS
 	cfg.MaxDeploymentsCount = int64(defaultMaxDeploymentsCount)
 	cfg.StrictCacheUpdates = false
-	cfg.EnableLabelPredictionsOnTemplate = true
-	cfg.EnableVMSSEtag = false
+cfg.EnableLabelPredictionsOnTemplate = true
+        cfg.EnableVMSSEtag = false // TODO(follow-up): add fork-specific etag support; upstream default kept for v1.35.1-aks
 
 	// Config file overrides defaults
 	if configReader != nil {
