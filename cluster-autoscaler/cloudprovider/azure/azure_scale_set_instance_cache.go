@@ -229,12 +229,7 @@ func (scaleSet *ScaleSet) instanceStatusFromVM(vm *compute.VirtualMachineScaleSe
 	case string(compute.GalleryProvisioningStateFailed):
 		status.State = cloudprovider.InstanceRunning
 
-		klog.V(3).Infof(
-			"VM %s reports failed provisioning state with power state: %s, scale down mode: %s, eligible for fast delete: %s",
-			to.String(vm.ID),
-			powerState,
-			scaleSet.scaleDownPolicy,
-			strconv.FormatBool(scaleSet.enableFastDeleteOnFailedProvisioning))
+		klog.V(3).Infof("VM %s reports failed provisioning state with power state: %s, scale down mode: %s, eligible for fast delete: %s", to.String(vm.ID), powerState, scaleSet.scaleDownPolicy, strconv.FormatBool(scaleSet.enableFastDeleteOnFailedProvisioning))
 		if scaleSet.scaleDownPolicy != deallocate.Deallocate && scaleSet.enableFastDeleteOnFailedProvisioning {
 			// Provisioning can fail both during instance creation or after the instance is running.
 			// Per https://learn.microsoft.com/en-us/azure/virtual-machines/states-billing#provisioning-states,
@@ -263,13 +258,7 @@ func (scaleSet *ScaleSet) instanceStatusFromVM(vm *compute.VirtualMachineScaleSe
 	// Add vmssCSE Provisioning Failed Message in error info body for vmssCSE Extensions if enableDetailedCSEMessage is true
 	if scaleSet.enableDetailedCSEMessage && vm.InstanceView != nil {
 		if err, failed := scaleSet.cseErrors(vm.InstanceView.Extensions); failed {
-			klog.V(3).Infof(
-				"VM %s reports CSE failure: %v, with provisioning state %s, power state %s, scale down mode: %s",
-				to.String(vm.ID),
-				err,
-				to.String(vm.ProvisioningState),
-				powerState,
-				scaleSet.scaleDownPolicy)
+			klog.V(3).Infof("VM %s reports CSE failure: %v, with provisioning state %s, power state %s, scale down mode: %s", to.String(vm.ID), err, to.String(vm.ProvisioningState), powerState, scaleSet.scaleDownPolicy)
 			status.State = cloudprovider.InstanceCreating
 			errorInfo := &cloudprovider.InstanceErrorInfo{
 				ErrorClass:   cloudprovider.OtherErrorClass,
