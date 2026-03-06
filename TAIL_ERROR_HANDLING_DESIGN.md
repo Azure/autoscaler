@@ -440,7 +440,7 @@ Power states reflect the VM's runtime status from the hypervisor, obtained from 
 
 ### 3.3 State Combinations During Normal Operations
 
-#### Delete Mode: Scale-Up (Create New VMs)
+#### `BeginCreateOrUpdate` — Scale-Up (Create New VMs)
 
 | Phase | Provisioning State | Power State | CAS Instance State |
 |-------|-------------------|-------------|-------------------|
@@ -451,7 +451,7 @@ Power states reflect the VM's runtime status from the hypervisor, obtained from 
 | Allocation failed | `Failed` | *(none)* or `stopped` | See Section 3.4 |
 | Extension failed | `Failed` | `running` | See Section 3.4 |
 
-#### Delete Mode: Scale-Down (Delete VMs)
+#### `BeginDeleteInstances` — Scale-Down (Delete VMs)
 
 | Phase | Provisioning State | Power State | CAS Instance State |
 |-------|-------------------|-------------|-------------------|
@@ -459,15 +459,7 @@ Power states reflect the VM's runtime status from the hypervisor, obtained from 
 | VM removed | *(VM no longer exists)* | *(N/A)* | Removed from instance list |
 | Delete failed | Previous state restored | `running` | `InstanceRunning` (reappears) |
 
-#### Deallocate Mode: Scale-Down (Deallocate VMs)
-
-| Phase | Provisioning State | Power State | CAS Instance State |
-|-------|-------------------|-------------|-------------------|
-| LRO initiated | `Updating` | `running` → `deallocating` | `InstanceDeallocating` (fork) |
-| VM deallocated | `Succeeded` | `deallocated` | `InstanceDeallocated` (fork) |
-| Deallocation failed | `Failed` | `running` (never stopped) | `InstanceRunning` |
-
-#### Deallocate Mode: Scale-Up (Start Deallocated VMs)
+#### `BeginStart` — Scale-Up via Reallocation (Start Deallocated VMs, Fork)
 
 | Phase | Provisioning State | Power State | CAS Instance State |
 |-------|-------------------|-------------|-------------------|
@@ -477,6 +469,14 @@ Power states reflect the VM's runtime status from the hypervisor, obtained from 
 | Start failed (capacity) | `Failed` | `deallocated` | **Gap**: not detected (see Section 5) |
 | Start failed (extension) | `Failed` | `running` | **Gap**: treated as running VM (see Section 5) |
 | Start timed out | `Failed` | varies | **Gap**: ambiguous state (see Section 5) |
+
+#### `BeginDeallocate` — Scale-Down (Deallocate VMs, Fork)
+
+| Phase | Provisioning State | Power State | CAS Instance State |
+|-------|-------------------|-------------|-------------------|
+| LRO initiated | `Updating` | `running` → `deallocating` | `InstanceDeallocating` (fork) |
+| VM deallocated | `Succeeded` | `deallocated` | `InstanceDeallocated` (fork) |
+| Deallocation failed | `Failed` | `running` (never stopped) | `InstanceRunning` |
 
 ### 3.4 How CAS Maps These States Today
 
