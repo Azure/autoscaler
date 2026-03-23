@@ -294,9 +294,11 @@ func TestGetInstancesByState(t *testing.T) {
 	scaleSet.scaleDownPolicy = deallocate.Deallocate
 
 	// t2 - cache is stale - instance with given state exists in the instanceCache
-	actualInstances, err = scaleSet.getInstancesByState(cloudprovider.InstanceFailed)
+	// VM[0] has ProvisioningState=Failed + no InstanceView (defaults to running power state)
+	// In deallocate mode, running VMs with failed provisioning are treated as InstanceRunning
+	actualInstances, err = scaleSet.getInstancesByState(cloudprovider.InstanceRunning)
 	assert.NoError(t, err)
-	assert.Equal(t, 1, len(actualInstances)) // there should be only one instance with failed State
+	assert.Equal(t, 1, len(actualInstances))
 	assert.Equal(t, expectedInstanceCache[0].Id, actualInstances[0].Id)
 	assert.Equal(t, expectedInstanceCache[0].Status.State, actualInstances[0].Status.State)
 
@@ -342,11 +344,11 @@ func TestSetInstanceStatusByProviderID(t *testing.T) {
 	// t2 - cache is stale - expectInstanceCache update, set for providerID=2 will not be added to the instanceCache because
 	// it doesn't exist in the cache. GetScaleSetVms() will have not introduced instance with providerID=2
 	providerID = azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 2)
-	status = cloudprovider.InstanceStatus{State: cloudprovider.InstanceFailed}
+	status = cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeleting}
 	scaleSet.setInstanceStatusByProviderID(providerID, status) // it will not set for providerID=2 as it is not already present in the cache
-	actualInstances, err := scaleSet.getInstancesByState(cloudprovider.InstanceFailed)
+	actualInstances, err := scaleSet.getInstancesByState(cloudprovider.InstanceDeleting)
 	assert.NoError(t, err)
-	assert.Equal(t, 1, len(actualInstances))
+	assert.Equal(t, 0, len(actualInstances))
 }
 
 // beforeEachNoInstanceCacheResetNeededHelper has 1 instance in the instanceCache with state = deallocated.
@@ -394,7 +396,7 @@ func TestBeforeEachInstanceCacheResetNeededHelper(t *testing.T) {
 	}
 	mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), provider.azureManager.config.ResourceGroup, testASG).Return(
 		expectedVMSSVMs, nil)
-	expectedStates = []cloudprovider.InstanceState{cloudprovider.InstanceFailed, cloudprovider.InstanceDeallocated}
+	expectedStates = []cloudprovider.InstanceState{cloudprovider.InstanceRunning, cloudprovider.InstanceDeallocated}
 	expectedInstanceCache = testGetInstanceCacheWithStates(t, expectedVMSSVMs, expectedStates)
 }
 
@@ -403,6 +405,7 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 
 	scaleSet.scaleDownPolicy = deallocate.Deallocate
 	// Disabled EnableFastDelete, deallocate mode, running power state
+	// Running VMs in deallocate mode default to InstanceRunning (CSE error check handles broken VMs)
 	vm := &armcompute.VirtualMachineScaleSetVM{
 		Properties: &armcompute.VirtualMachineScaleSetVMProperties{
 			ProvisioningState: ptr.To(string(armcompute.GalleryProvisioningStateFailed)),
@@ -415,9 +418,10 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 	}
 	status := scaleSet.instanceStatusFromVM(vm)
 	assert.NotNil(t, status)
-	assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+	assert.Equal(t, cloudprovider.InstanceRunning, status.State)
 
 	// Enabled EnableFastDelete, deallocate mode, running power state
+	// Running VMs still get InstanceRunning — fast-delete doesn't apply in deallocate mode for running VMs
 	scaleSet.enableFastDeleteOnFailedProvisioning = true
 	vm = &armcompute.VirtualMachineScaleSetVM{
 		Properties: &armcompute.VirtualMachineScaleSetVMProperties{
@@ -431,10 +435,11 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 	}
 	status = scaleSet.instanceStatusFromVM(vm)
 	assert.NotNil(t, status)
-	assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+	assert.Equal(t, cloudprovider.InstanceRunning, status.State)
 	scaleSet.enableFastDeleteOnFailedProvisioning = false
 
 	// Enabled EnableFastDelete, deallocate mode, not running power state
+	// Non-running VMs in deallocate mode trigger backoff (InstanceCreating + ErrorInfo)
 	scaleSet.enableFastDeleteOnFailedProvisioning = true
 	vm = &armcompute.VirtualMachineScaleSetVM{
 		Properties: &armcompute.VirtualMachineScaleSetVMProperties{
@@ -448,7 +453,10 @@ func TestInstanceStatusFromVMEnableFastDeleteOnFailedProvisioning(t *testing.T) 
 	}
 	status = scaleSet.instanceStatusFromVM(vm)
 	assert.NotNil(t, status)
-	assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+	assert.Equal(t, cloudprovider.InstanceCreating, status.State)
+	assert.NotNil(t, status.ErrorInfo)
+	assert.Equal(t, cloudprovider.OutOfResourcesErrorClass, status.ErrorInfo.ErrorClass)
+	assert.Equal(t, "start-deallocated-failed", status.ErrorInfo.ErrorCode)
 	scaleSet.enableFastDeleteOnFailedProvisioning = false
 
 	scaleSet.scaleDownPolicy = deallocate.Delete
@@ -551,7 +559,8 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Starting is a running power state — treated as running
+			assert.Equal(t, cloudprovider.InstanceRunning, status.State)
 		})
 
 		t.Run("provisioning state = failed, power state = running", func(t *testing.T) {
@@ -560,7 +569,8 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Running VM with failed provisioning — treated as running, CSE error check handles it
+			assert.Equal(t, cloudprovider.InstanceRunning, status.State)
 		})
 
 		t.Run("provisioning state = failed, power state = stopping", func(t *testing.T) {
@@ -569,7 +579,10 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Stopping is not a running power state — triggers backoff
+			assert.Equal(t, cloudprovider.InstanceCreating, status.State)
+			assert.NotNil(t, status.ErrorInfo)
+			assert.Equal(t, "start-deallocated-failed", status.ErrorInfo.ErrorCode)
 		})
 
 		t.Run("provisioning state = failed, power state = stopped", func(t *testing.T) {
@@ -578,7 +591,10 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Stopped is not running — triggers backoff
+			assert.Equal(t, cloudprovider.InstanceCreating, status.State)
+			assert.NotNil(t, status.ErrorInfo)
+			assert.Equal(t, "start-deallocated-failed", status.ErrorInfo.ErrorCode)
 		})
 
 		t.Run("provisioning state = failed, power state = deallocated", func(t *testing.T) {
@@ -587,7 +603,10 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Deallocated VM that failed to start — triggers backoff
+			assert.Equal(t, cloudprovider.InstanceCreating, status.State)
+			assert.NotNil(t, status.ErrorInfo)
+			assert.Equal(t, "start-deallocated-failed", status.ErrorInfo.ErrorCode)
 		})
 
 		t.Run("provisioning state = failed, power state = unknown", func(t *testing.T) {
@@ -596,7 +615,10 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Unknown power state (not running) — triggers backoff
+			assert.Equal(t, cloudprovider.InstanceCreating, status.State)
+			assert.NotNil(t, status.ErrorInfo)
+			assert.Equal(t, "start-deallocated-failed", status.ErrorInfo.ErrorCode)
 		})
 	})
 
@@ -610,7 +632,8 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Starting is a running power state — treated as running
+			assert.Equal(t, cloudprovider.InstanceRunning, status.State)
 		})
 
 		t.Run("provisioning state = failed, power state = running", func(t *testing.T) {
@@ -619,7 +642,8 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Running VM with failed provisioning — treated as running
+			assert.Equal(t, cloudprovider.InstanceRunning, status.State)
 		})
 
 		t.Run("provisioning state = failed, power state = stopping", func(t *testing.T) {
@@ -628,7 +652,10 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Stopping is not a running power state — triggers backoff
+			assert.Equal(t, cloudprovider.InstanceCreating, status.State)
+			assert.NotNil(t, status.ErrorInfo)
+			assert.Equal(t, "start-deallocated-failed", status.ErrorInfo.ErrorCode)
 		})
 
 		t.Run("provisioning state = failed, power state = stopped", func(t *testing.T) {
@@ -637,7 +664,10 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Stopped is not running — triggers backoff
+			assert.Equal(t, cloudprovider.InstanceCreating, status.State)
+			assert.NotNil(t, status.ErrorInfo)
+			assert.Equal(t, "start-deallocated-failed", status.ErrorInfo.ErrorCode)
 		})
 
 		t.Run("provisioning state = failed, power state = deallocated", func(t *testing.T) {
@@ -646,7 +676,10 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Deallocated VM that failed to start — triggers backoff
+			assert.Equal(t, cloudprovider.InstanceCreating, status.State)
+			assert.NotNil(t, status.ErrorInfo)
+			assert.Equal(t, "start-deallocated-failed", status.ErrorInfo.ErrorCode)
 		})
 
 		t.Run("provisioning state = failed, power state = unknown", func(t *testing.T) {
@@ -655,7 +688,10 @@ func TestInstanceStatusFromVMDeallocateMode(t *testing.T) {
 			status := scaleSet.instanceStatusFromVM(vm)
 
 			assert.NotNil(t, status)
-			assert.Equal(t, cloudprovider.InstanceFailed, status.State)
+			// Unknown power state (not running) — triggers backoff
+			assert.Equal(t, cloudprovider.InstanceCreating, status.State)
+			assert.NotNil(t, status.ErrorInfo)
+			assert.Equal(t, "start-deallocated-failed", status.ErrorInfo.ErrorCode)
 		})
 	})
 }
