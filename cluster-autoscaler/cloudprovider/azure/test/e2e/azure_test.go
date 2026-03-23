@@ -151,4 +151,162 @@ var _ = Describe("Azure Provider", func() {
 			))
 		}, "20m", "10s").Should(Succeed())
 	})
+
+	// TODO: This test requires a deallocate-mode node pool and the ability to induce
+	// a start failure. Uncomment and adapt once the test infrastructure supports
+	// configuring scale-down-mode on VMSS and simulating capacity errors.
+	//
+	// Design: After a deallocate-mode node pool scales down (VMs deallocated),
+	// trigger a scale-up that causes BeginStart to fail (e.g., constrained SKU).
+	// CAS should:
+	//   1. Detect the failure via instanceStatusFromVM (InstanceCreating + ErrorInfo)
+	//   2. Register a failed scale-up → exponential backoff on the node group
+	//   3. NOT delete the deallocated VMs (deleteCreatedNodesWithErrors guard)
+	//   4. Emit a ScaleUpFailed Kubernetes event
+	//
+	// Verification signals:
+	//   - K8s events: ScaleUpFailed on the node group
+	//   - CAS metrics: failed_scale_ups_total{reason="start-deallocated-failed"} > 0
+	//   - VMSS state: deallocated VMs still exist (not deleted)
+	//   - Node count: unchanged (no new nodes joined)
+	PIt("backs off deallocate-mode node groups on failed VM start", func() {
+		ensureHelmValues(map[string]interface{}{
+			"extraArgs": map[string]interface{}{
+				"scale-down-delay-after-add":       "10s",
+				"scale-down-unneeded-time":         "10s",
+				"scale-down-candidates-pool-ratio": "1.0",
+				"unremovable-node-recheck-timeout": "10s",
+				"skip-nodes-with-system-pods":      "false",
+				"skip-nodes-with-local-storage":    "false",
+			},
+		})
+
+		nodes := &corev1.NodeList{}
+		Expect(k8s.List(ctx, nodes)).To(Succeed())
+		nodeCountBefore := len(nodes.Items)
+
+		By("Creating Pods to trigger scale-up on a deallocate-mode pool")
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "deallocate-backoff-test",
+				Namespace: namespace.Name,
+			},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "deallocate-backoff-test"},
+				},
+				Replicas: ptr.To[int32](10),
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"app": "deallocate-backoff-test"},
+					},
+					Spec: corev1.PodSpec{
+						// TODO: Add nodeSelector/affinity to target the deallocate-mode pool
+						Containers: []corev1.Container{
+							{
+								Name:  "pause",
+								Image: "registry.k8s.io/pause:3.9",
+								Resources: corev1.ResourceRequirements{
+									Requests: corev1.ResourceList{
+										corev1.ResourceCPU: resource.MustParse("200m"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8s.Create(ctx, deploy)).To(Succeed())
+
+		By("Waiting for scale-up and subsequent scale-down (VMs deallocated)")
+		Eventually(func() (int, error) {
+			readyCount := 0
+			nodes := &corev1.NodeList{}
+			if err := k8s.List(ctx, nodes); err != nil {
+				return 0, err
+			}
+			for _, node := range nodes.Items {
+				for _, cond := range node.Status.Conditions {
+					if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+						readyCount++
+						break
+					}
+				}
+			}
+			return readyCount, nil
+		}, "10m", "10s").Should(BeNumerically(">", nodeCountBefore))
+
+		By("Deleting the deployment to trigger scale-down → deallocate")
+		Expect(k8s.Delete(ctx, deploy)).To(Succeed())
+		Eventually(allVMSSStable, "20m", "30s").Should(Succeed())
+
+		// TODO: At this point, the deallocate-mode VMSS should have deallocated VMs.
+		// Now we need to induce a start failure. Options:
+		//   Option A: Use Azure SDK to set a policy/quota that prevents VM start
+		//   Option B: Use a constrained SKU that's out of capacity
+		//   Option C: Corrupt the VM's CSE so it fails on restart
+		//
+		// Then create new Pods to trigger scale-up (which will try to start deallocated VMs).
+
+		By("Creating Pods to trigger scale-up (restart of deallocated VMs)")
+		deploy2 := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "deallocate-backoff-trigger",
+				Namespace: namespace.Name,
+			},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "deallocate-backoff-trigger"},
+				},
+				Replicas: ptr.To[int32](10),
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"app": "deallocate-backoff-trigger"},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "pause",
+								Image: "registry.k8s.io/pause:3.9",
+								Resources: corev1.ResourceRequirements{
+									Requests: corev1.ResourceList{
+										corev1.ResourceCPU: resource.MustParse("200m"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8s.Create(ctx, deploy2)).To(Succeed())
+
+		By("Verifying CAS emits ScaleUpFailed event (backoff triggered)")
+		Eventually(func() bool {
+			events := &corev1.EventList{}
+			if err := k8s.List(ctx, events, client.InNamespace(namespace.Name)); err != nil {
+				return false
+			}
+			for _, event := range events.Items {
+				if event.Reason == "ScaleUpFailed" {
+					return true
+				}
+			}
+			return false
+		}, "15m", "10s").Should(BeTrue(), "Expected ScaleUpFailed event from CAS backoff")
+
+		By("Verifying deallocated VMs were NOT deleted")
+		// TODO: Use vmss client to list instances and verify deallocated VMs still exist
+		// pager := vmss.NewListPager(resourceGroup, nil)
+		// Count instances with PowerState/deallocated — should be > 0
+
+		By("Verifying node count did not increase (backoff prevented new scale-up)")
+		nodes = &corev1.NodeList{}
+		Expect(k8s.List(ctx, nodes)).To(Succeed())
+		Expect(len(nodes.Items)).To(Equal(nodeCountBefore))
+
+		By("Cleanup")
+		Expect(k8s.Delete(ctx, deploy2)).To(Succeed())
+	})
 })

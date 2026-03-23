@@ -229,26 +229,30 @@ func (scaleSet *ScaleSet) instanceStatusFromVM(vm *compute.VirtualMachineScaleSe
 		status.State = cloudprovider.InstanceRunning
 
 		klog.V(3).Infof("VM %s reports failed provisioning state with power state: %s, scale down mode: %s, eligible for fast delete: %s", to.String(vm.ID), powerState, scaleSet.scaleDownPolicy, strconv.FormatBool(scaleSet.enableFastDeleteOnFailedProvisioning))
-		if scaleSet.scaleDownPolicy != deallocate.Deallocate && scaleSet.enableFastDeleteOnFailedProvisioning {
+		if scaleSet.enableFastDeleteOnFailedProvisioning {
 			// Provisioning can fail both during instance creation or after the instance is running.
 			// Per https://learn.microsoft.com/en-us/azure/virtual-machines/states-billing#provisioning-states,
 			// ProvisioningState represents the most recent provisioning state, therefore only report
-			// InstanceCreating errors when the power state indicates the instance has not yet started running
+			// InstanceCreating errors when the power state indicates the instance has not yet started running.
+			//
+			// This relies on the fact that InstanceCreating + ErrorInfo will subsequently trigger:
+			// 1. handleInstanceCreationErrors → backoff on the node group
+			// 2. deleteCreatedNodesWithErrors → cleanup (skipped for deallocate-mode groups)
+			// Could be revisited to rely on something more stable/explicit.
 			if !isRunningVmPowerState(powerState) {
-				// This fast deletion relies on the fact that InstanceCreating + ErrorInfo will subsequently trigger a deletion.
-				// Could be revisited to rely on something more stable/explicit.
 				status.State = cloudprovider.InstanceCreating
+				errorCode := "provisioning-state-failed"
+				errorMessage := "Azure failed to provision a node for this node group"
+				if scaleSet.scaleDownPolicy == deallocate.Deallocate {
+					errorCode = "start-deallocated-failed"
+					errorMessage = "Failed to start deallocated VM"
+				}
 				status.ErrorInfo = &cloudprovider.InstanceErrorInfo{
 					ErrorClass:   cloudprovider.OutOfResourcesErrorClass,
-					ErrorCode:    "provisioning-state-failed",
-					ErrorMessage: "Azure failed to provision a node for this node group",
+					ErrorCode:    errorCode,
+					ErrorMessage: errorMessage,
 				}
-			} else {
-				status.State = cloudprovider.InstanceRunning
 			}
-		} else if scaleSet.scaleDownPolicy == deallocate.Deallocate {
-			// Current(?) deallocate mode design handles InstanceFailed and InstanceRunning differently.
-			status.State = cloudprovider.InstanceFailed
 		}
 	default:
 		status.State = cloudprovider.InstanceRunning
