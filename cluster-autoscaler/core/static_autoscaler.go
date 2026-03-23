@@ -889,9 +889,14 @@ func (a *StaticAutoscaler) deleteCreatedNodesWithErrors() {
 		nodeGroup := nodeGroups[nodeGroupId]
 		if nodeGroup == nil {
 			err = fmt.Errorf("node group %s not found", nodeGroupId)
+		} else if dng, ok := nodeGroup.(interface{ IsDeallocateMode() bool }); ok && dng.IsDeallocateMode() {
+			// Deallocate-mode groups: failed-to-start VMs should be preserved for future reuse,
+			// not deleted. Backoff is still triggered via handleInstanceCreationErrors.
+			klog.V(1).Infof("Skipping deletion of %v failed nodes in deallocate-mode group %v — VMs preserved for reuse", len(nodesToDelete), nodeGroupId)
+			continue
 		} else if nodesToDelete, err = overrideNodesToDeleteForZeroOrMax(a.NodeGroupDefaults, nodeGroup, nodesToDelete); err == nil && len(nodesToDelete) > 0 {
 			if a.ForceDeleteFailedNodes {
-				err = nodeGroup.ForceDeleteNodes(nodesToDelete)
+				err = nosdp, ok := nodeGroup.(interface{ ScaleDownPolicy() string }); ok && sdp.ScaleDownPolicy() == "Deallocate"
 				if errors.Is(err, cloudprovider.ErrNotImplemented) {
 					err = nodeGroup.DeleteNodes(nodesToDelete)
 				}
