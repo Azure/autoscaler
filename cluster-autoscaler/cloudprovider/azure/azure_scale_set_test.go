@@ -1604,14 +1604,14 @@ func TestWaitForDeleteInstancesWithOperationPreemptedRetry(t *testing.T) {
 	}
 
 	// Create a poller that will return an OperationPreempted error
-	preemptedPoller := newTestPollerWithError(errors.New("Operation execution has been preempted by a more recent operation"))
+	preemptedPoller := newTestPollerWithError(errors.New("Code: OperationPreempted, Message: Operation execution has been preempted"))
 
 	scaleSet := newTestScaleSet(manager, "test-asg")
 
-	// Call waitForDeleteInstances directly — it should detect the preempted error and retry via deleteInstances
+	// Call waitForDeleteInstances directly — it should detect the preempted error and retry via retryDeleteInstances
 	// The retry call to deleteInstances returns (nil, nil) from the mock, so the retry poller is nil
-	// and it falls through to cache invalidation. This verifies the retry path is exercised without panicking.
-	scaleSet.waitForDeleteInstances(preemptedPoller, requiredIds, "test-asg")
+	// and retryDeleteInstances treats that as success. This verifies the retry path is exercised without panicking.
+	scaleSet.waitForDeleteInstances(preemptedPoller, requiredIds)
 
 	// Verify that BeginDeleteInstances was called (the retry attempt)
 	// gomock will fail the test if the expected call was not made
@@ -1667,7 +1667,7 @@ func TestWaitForDeleteInstancesNoRetryOnOtherErrors(t *testing.T) {
 	scaleSet := newTestScaleSet(manager, "test-asg")
 
 	// Call waitForDeleteInstances — it should NOT retry because the error is not OperationPreempted
-	scaleSet.waitForDeleteInstances(otherErrorPoller, requiredIds, "test-asg")
+	scaleSet.waitForDeleteInstances(otherErrorPoller, requiredIds)
 
 	// If this completes without gomock failures, the retry path was NOT exercised (correct behavior)
 }
