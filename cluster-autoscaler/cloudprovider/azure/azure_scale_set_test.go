@@ -1585,9 +1585,9 @@ func TestWaitForDeleteInstancesWithOperationPreemptedRetry(t *testing.T) {
 	mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), manager.config.ResourceGroup, "test-asg").Return(expectedVMSSVMs, nil).AnyTimes()
 	manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
 
-	// Mock the delete client to return (nil, nil) for the retry call from waitForDeleteInstances
+	// Override the default delete client mock: expect exactly 1 retry call to BeginDeleteInstances
 	mockDeleteClient := NewMockVMSSDeleteClient(ctrl)
-	mockDeleteClient.EXPECT().BeginDeleteInstances(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	mockDeleteClient.EXPECT().BeginDeleteInstances(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).Times(1)
 	manager.azClient.vmssClientForDelete = mockDeleteClient
 
 	err := manager.forceRefresh()
@@ -1603,18 +1603,23 @@ func TestWaitForDeleteInstancesWithOperationPreemptedRetry(t *testing.T) {
 		InstanceIDs: []*string{ptr.To("0")},
 	}
 
-	// Create a poller that will return an OperationPreempted error
-	preemptedPoller := newTestPollerWithError(errors.New("Operation execution has been preempted by a more recent operation"))
-
 	scaleSet := newTestScaleSet(manager, "test-asg")
 
-	// Call waitForDeleteInstances directly — it should detect the preempted error and retry via retryDeleteInstances
-	// The retry call to deleteInstances returns (nil, nil) from the mock, so the retry poller is nil
-	// and retryDeleteInstances treats that as success. This verifies the retry path is exercised without panicking.
+	// lastInstanceRefresh starts at zero value for a new ScaleSet
+	assert.True(t, scaleSet.lastInstanceRefresh.IsZero())
+
+	// Create a poller that returns an OperationPreempted error on PollUntilDone
+	preemptedPoller := newTestPollerWithError(errors.New("Operation execution has been preempted by a more recent operation"))
+
+	// Act: the initial PollUntilDone fails with OperationPreempted, triggering a retry.
+	// The retry calls deleteInstances which returns (nil, nil) from the mock — retryPoller is nil,
+	// so retryErr stays nil, which counts as success. The function should invalidate cache and return.
 	scaleSet.waitForDeleteInstances(preemptedPoller, requiredIds)
 
-	// Verify that BeginDeleteInstances was called (the retry attempt)
-	// gomock will fail the test if the expected call was not made
+	// Assert: BeginDeleteInstances was called exactly once (the retry). gomock.Times(1) enforces this.
+	// Assert: instance cache was invalidated (lastInstanceRefresh changed from zero)
+	assert.False(t, scaleSet.lastInstanceRefresh.IsZero(),
+		"expected instance cache to be invalidated after preempted retry success")
 }
 
 func TestWaitForDeleteInstancesNoRetryOnOtherErrors(t *testing.T) {
@@ -1647,7 +1652,12 @@ func TestWaitForDeleteInstancesNoRetryOnOtherErrors(t *testing.T) {
 	mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), manager.config.ResourceGroup, "test-asg").Return(expectedVMSSVMs, nil).AnyTimes()
 	manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
 
-	// Do NOT set up a mock delete client expectation — if retry is attempted, gomock will fail
+	// Override the default delete client mock: expect exactly 0 calls to BeginDeleteInstances.
+	// If the retry path is accidentally triggered, gomock will fail the test.
+	mockDeleteClient := NewMockVMSSDeleteClient(ctrl)
+	mockDeleteClient.EXPECT().BeginDeleteInstances(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+	manager.azClient.vmssClientForDelete = mockDeleteClient
+
 	err := manager.forceRefresh()
 	assert.NoError(t, err)
 
@@ -1661,13 +1671,80 @@ func TestWaitForDeleteInstancesNoRetryOnOtherErrors(t *testing.T) {
 		InstanceIDs: []*string{ptr.To("0")},
 	}
 
-	// Create a poller that will return a non-preempted error
+	scaleSet := newTestScaleSet(manager, "test-asg")
+
+	// Create a poller that returns a non-preempted error
 	otherErrorPoller := newTestPollerWithError(errors.New("InternalServerError: something went wrong"))
+
+	// Act: PollUntilDone fails with a non-preempted error — should NOT trigger retry
+	scaleSet.waitForDeleteInstances(otherErrorPoller, requiredIds)
+
+	// Assert: BeginDeleteInstances was never called. gomock.Times(0) enforces this.
+}
+
+func TestWaitForDeleteInstancesRetryFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	manager := newTestAzureManager(t)
+
+	vmssName := "test-asg"
+	var vmssCapacity int64 = 3
+	orchMode := armcompute.OrchestrationModeUniform
+
+	expectedScaleSets := []*armcompute.VirtualMachineScaleSet{
+		{
+			Name: &vmssName,
+			SKU: &armcompute.SKU{
+				Capacity: &vmssCapacity,
+			},
+			Properties: &armcompute.VirtualMachineScaleSetProperties{
+				OrchestrationMode: &orchMode,
+			},
+		},
+	}
+	expectedVMSSVMs := newTestVMSSVMList(3)
+
+	mockVMSSClient := mock_virtualmachinescalesetclient.NewMockInterface(ctrl)
+	mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
+	manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+	mockVMSSVMClient := mock_virtualmachinescalesetvmclient.NewMockInterface(ctrl)
+	mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), manager.config.ResourceGroup, "test-asg").Return(expectedVMSSVMs, nil).AnyTimes()
+	manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+	// Override the default delete client mock: the retry call to deleteInstances itself fails
+	mockDeleteClient := NewMockVMSSDeleteClient(ctrl)
+	mockDeleteClient.EXPECT().BeginDeleteInstances(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil, errors.New("ResourceGroupNotFound")).Times(1)
+	manager.azClient.vmssClientForDelete = mockDeleteClient
+
+	err := manager.forceRefresh()
+	assert.NoError(t, err)
+
+	registered := manager.RegisterNodeGroup(newTestScaleSet(manager, "test-asg"))
+	manager.explicitlyConfigured["test-asg"] = true
+	assert.True(t, registered)
+	err = manager.forceRefresh()
+	assert.NoError(t, err)
+
+	requiredIds := &armcompute.VirtualMachineScaleSetVMInstanceRequiredIDs{
+		InstanceIDs: []*string{ptr.To("0")},
+	}
 
 	scaleSet := newTestScaleSet(manager, "test-asg")
 
-	// Call waitForDeleteInstances — it should NOT retry because the error is not OperationPreempted
-	scaleSet.waitForDeleteInstances(otherErrorPoller, requiredIds)
+	// lastInstanceRefresh starts at zero value for a new ScaleSet
+	assert.True(t, scaleSet.lastInstanceRefresh.IsZero())
 
-	// If this completes without gomock failures, the retry path was NOT exercised (correct behavior)
+	// Create a poller that returns OperationPreempted
+	preemptedPoller := newTestPollerWithError(errors.New("Operation execution has been preempted by a more recent operation"))
+
+	// Act: PollUntilDone fails with OperationPreempted, retry is attempted but deleteInstances fails.
+	// Should fall through to the error path and invalidate cache.
+	scaleSet.waitForDeleteInstances(preemptedPoller, requiredIds)
+
+	// Assert: retry was attempted exactly once (gomock.Times(1) enforces this)
+	// Assert: cache was still invalidated despite failure (the !StrictCacheUpdates path)
+	assert.False(t, scaleSet.lastInstanceRefresh.IsZero(),
+		"expected instance cache to be invalidated after retry failure")
 }
