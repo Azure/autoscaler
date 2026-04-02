@@ -28,7 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// When Azure Dedicated Host is enabled or using isolated vm skus, force deleting a VMSS fails with the following error:
+// When Azure Dedicated Host is enabled or using isolated vm skus, force deleting a VMSS fails with the following er:
 //
 // "predominantErrorDetail": {
 //   "innererror": {
@@ -98,15 +98,15 @@ func isOperationNotAllowed(err error) bool {
 	return strings.Contains(err.Error(), azerrors.OperationNotAllowed)
 }
 
-const operationPreemptedErrorCode = "OperationPreempted"
+const operationPreemptedErrorMessage = "Operation execution has been preempted by a more recent operation"
 
 // isOperationPreempted checks if `error` is an OperationPreempted error.
 func isOperationPreempted(err error) bool {
 	if err == nil {
 		return false
 	}
-	if azerr := azerrors.IsResponseError(err); azerr != nil {
-		return azerr.ErrorCode == operationPreemptedErrorCode
-	}
-	return strings.Contains(err.Error(), operationPreemptedErrorCode)
+	return strings.Contains(
+		strings.ToLower(err.Error()),
+		strings.ToLower(operationPreemptedErrorMessage),
+	)
 }

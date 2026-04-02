@@ -78,13 +78,18 @@ func TestIsOperationPreempted(t *testing.T) {
 		assert.Equal(t, isOperationPreempted(err), false)
 	})
 
-	t.Run("should return true if error contains OperationPreempted", func(t *testing.T) {
-		err := errors.New("Code: OperationPreempted, Message: Operation execution has been preempted")
+	t.Run("should return true for exact preempted message", func(t *testing.T) {
+		err := errors.New("Operation execution has been preempted by a more recent operation")
 		assert.Equal(t, isOperationPreempted(err), true)
 	})
 
-	t.Run("should return true for OperationPreempted embedded in longer string", func(t *testing.T) {
-		err := errors.New("Azure error: OperationPreempted: details here")
+	t.Run("should return true for case-varied message", func(t *testing.T) {
+		err := errors.New("OPERATION EXECUTION HAS BEEN PREEMPTED BY A MORE RECENT OPERATION")
+		assert.Equal(t, isOperationPreempted(err), true)
+	})
+
+	t.Run("should return true for embedded message", func(t *testing.T) {
+		err := errors.New("Azure error: Operation execution has been preempted by a more recent operation: details here")
 		assert.Equal(t, isOperationPreempted(err), true)
 	})
 }

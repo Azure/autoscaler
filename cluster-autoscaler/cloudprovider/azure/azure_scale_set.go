@@ -587,56 +587,27 @@ func (scaleSet *ScaleSet) waitForDeleteInstances(poller *runtime.Poller[armcompu
 		return
 	}
 
+	// Retry once on OperationPreempted, mirroring the pattern in vmssvmclient.updateVMSSVMs()
 	if isOperationPreempted(err) {
-		klog.Warningf("DeleteInstances(%v) for %s got OperationPreempted, retrying",
-			requiredIds.InstanceIDs, scaleSet.Name)
-		scaleSet.retryDeleteInstances(requiredIds)
-		return
+		klog.V(2).Infof("PollUntilDone for DeleteInstances(%v) for %s was preempted, retrying once", requiredIds.InstanceIDs, scaleSet.Name)
+		retryCtx, retryCancel := getContextWithTimeout(vmssContextTimeout)
+		retryPoller, retryErr := scaleSet.deleteInstances(retryCtx, requiredIds, scaleSet.Name)
+		retryCancel()
+		if retryErr == nil && retryPoller != nil {
+			_, retryErr = retryPoller.PollUntilDone(ctx, nil)
+		}
+		if retryErr == nil {
+			klog.V(3).Infof("PollUntilDone for DeleteInstances(%v) for %s retry success", requiredIds.InstanceIDs, scaleSet.Name)
+			scaleSet.invalidateInstanceCache()
+			return
+		}
+		klog.Errorf("PollUntilDone for DeleteInstances(%v) for %s retry failed: %v", requiredIds.InstanceIDs, scaleSet.Name, retryErr)
 	}
 
 	if !scaleSet.manager.config.StrictCacheUpdates {
 		scaleSet.invalidateInstanceCache()
 	}
 	klog.Errorf("PollUntilDone for DeleteInstances(%v) for %s failed with error: %v", requiredIds.InstanceIDs, scaleSet.Name, err)
-}
-
-func (scaleSet *ScaleSet) retryDeleteInstances(requiredIds *armcompute.VirtualMachineScaleSetVMInstanceRequiredIDs) {
-	const maxRetries = 3
-	backoff := []time.Duration{10 * time.Second, 30 * time.Second, 60 * time.Second}
-
-	for i := 0; i < maxRetries; i++ {
-		time.Sleep(backoff[i])
-
-		ctx, cancel := getContextWithTimeout(vmssContextTimeout)
-		poller, err := scaleSet.deleteInstances(ctx, requiredIds, scaleSet.Name)
-		cancel()
-		if err != nil {
-			klog.Errorf("Retry %d/%d: BeginDeleteInstances for %s failed: %v", i+1, maxRetries, scaleSet.Name, err)
-			continue
-		}
-		if poller == nil {
-			klog.V(3).Infof("Retry %d/%d: poller nil for %s, assuming success", i+1, maxRetries, scaleSet.Name)
-			return
-		}
-
-		ctx2, cancel2 := getContextWithTimeout(asyncContextTimeout)
-		_, err = poller.PollUntilDone(ctx2, nil)
-		cancel2()
-		if err == nil {
-			klog.V(3).Infof("Retry %d/%d: DeleteInstances for %s succeeded", i+1, maxRetries, scaleSet.Name)
-			scaleSet.invalidateInstanceCache()
-			return
-		}
-		if !isOperationPreempted(err) {
-			klog.Errorf("Retry %d/%d: non-retriable error for %s: %v", i+1, maxRetries, scaleSet.Name, err)
-			break
-		}
-		klog.Warningf("Retry %d/%d: DeleteInstances for %s still OperationPreempted", i+1, maxRetries, scaleSet.Name)
-	}
-
-	klog.Errorf("All retries exhausted for DeleteInstances(%v) for %s",
-		requiredIds.InstanceIDs, scaleSet.Name)
-	scaleSet.invalidateInstanceCache()
 }
 
 // DeleteNodes deletes the nodes from the group.

@@ -1604,7 +1604,7 @@ func TestWaitForDeleteInstancesWithOperationPreemptedRetry(t *testing.T) {
 	}
 
 	// Create a poller that will return an OperationPreempted error
-	preemptedPoller := newTestPollerWithError(errors.New("Code: OperationPreempted, Message: Operation execution has been preempted"))
+	preemptedPoller := newTestPollerWithError(errors.New("Operation execution has been preempted by a more recent operation"))
 
 	scaleSet := newTestScaleSet(manager, "test-asg")
 
