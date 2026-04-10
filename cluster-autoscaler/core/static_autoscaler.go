@@ -25,6 +25,7 @@ import (
 
 	"k8s.io/autoscaler/cluster-autoscaler/capacitybuffer/fakepods"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
@@ -943,6 +944,11 @@ func (a *StaticAutoscaler) deleteCreatedNodesWithErrors() {
 		nodeGroup := nodeGroups[nodeGroupId]
 		if nodeGroup == nil {
 			err = fmt.Errorf("node group %s not found", nodeGroupId)
+		} else if sdp, ok := nodeGroup.(deallocate.PolicyNodeGroup); ok && sdp.ScaleDownPolicy() == deallocate.Deallocate {
+			// Deallocate-mode groups: failed-to-start VMs should be preserved for future reuse,
+			// not deleted. Backoff is still triggered via handleInstanceCreationErrors.
+			klog.V(1).Infof("Skipping deletion of %v failed nodes in deallocate-mode group %v — VMs preserved for reuse", len(nodesToDelete), nodeGroupId)
+			continue
 		} else if nodesToDelete, err = overrideNodesToDeleteForZeroOrMax(a.NodeGroupDefaults, nodeGroup, nodesToDelete); err == nil && len(nodesToDelete) > 0 {
 			if a.ForceDeleteFailedNodes {
 				err = nodeGroup.ForceDeleteNodes(nodesToDelete)
