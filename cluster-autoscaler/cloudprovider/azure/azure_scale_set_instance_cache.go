@@ -279,10 +279,7 @@ func (scaleSet *ScaleSet) instanceStatusFromVM(vm *armcompute.VirtualMachineScal
 			if !isRunningVmPowerState(powerState) {
 				// VM failed to start — remains deallocated or stopped.
 				// Signal as creation error to trigger backoff via handleInstanceCreationErrors.
-				// The deleteCreatedNodesWithErrors guard skips deletion for deallocate-mode groups,
-				// preserving VMs for future reuse.
-				// This fast deletion relies on the fact that InstanceCreating + ErrorInfo will subsequently trigger a deletion.
-				// Could be revisited to rely on something more stable/explicit.
+				// Failed VMs will be deleted by deleteCreatedNodesWithErrors.
 				status.State = cloudprovider.InstanceCreating
 				status.ErrorInfo = &cloudprovider.InstanceErrorInfo{
 					ErrorClass:   cloudprovider.OutOfResourcesErrorClass,
