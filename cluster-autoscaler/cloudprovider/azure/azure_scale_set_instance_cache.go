@@ -198,6 +198,43 @@ func (scaleSet *ScaleSet) setInstanceStatusByProviderID(providerID string, statu
 	}
 }
 
+// setInstanceStatusIfNotSuperseded sets the status for an instance only if a newer concurrent
+// operation has not already transitioned it to a different state. This prevents async completion
+// goroutines (e.g., waitForDeallocateInstances) from blindly overwriting cache state that was
+// set by a more recent operation (e.g., startInstance).
+//
+// supersedingStates lists the states that indicate a newer operation has taken over — if the
+// instance is currently in any of these states, the update is skipped.
+func (scaleSet *ScaleSet) setInstanceStatusIfNotSuperseded(providerID string, status cloudprovider.InstanceStatus, supersedingStates []cloudprovider.InstanceState) {
+	scaleSet.instanceMutex.Lock()
+	defer scaleSet.instanceMutex.Unlock()
+
+	err := scaleSet.validateInstanceCacheWithoutLock()
+	if err != nil {
+		klog.Errorf("setInstanceStatusIfNotSuperseded: error validating instanceCache for providerID %s for "+
+			"scaleSet: %s, err: %v", providerID, scaleSet.Name, err)
+	}
+
+	for k, instance := range scaleSet.instanceCache {
+		if instance.Id == providerID {
+			if instance.Status != nil {
+				for _, s := range supersedingStates {
+					if instance.Status.State == s {
+						klog.V(3).Infof("setInstanceStatusIfNotSuperseded: skipping state update for %s "+
+							"in scaleSet %s: current state %v was set by a newer operation (target was %v)",
+							providerID, scaleSet.Name, instance.Status.State, status.State)
+						return
+					}
+				}
+			}
+			klog.V(3).Infof("setInstanceStatusIfNotSuperseded: setting instance state for %s for scaleSet "+
+				"%s to %d", instance.Id, scaleSet.Name, status.State)
+			scaleSet.instanceCache[k].Status = &status
+			break
+		}
+	}
+}
+
 // instanceStatusFromVM converts the VM provisioning state to cloudprovider.InstanceStatus.
 // Suggestion: reunify this with instanceStatusFromProvisioningStateAndPowerState() in azure_scale_set.go
 func (scaleSet *ScaleSet) instanceStatusFromVM(vm *armcompute.VirtualMachineScaleSetVM) *cloudprovider.InstanceStatus {

@@ -694,9 +694,18 @@ func (scaleSet *ScaleSet) waitForDeallocateInstances(poller *runtime.Poller[armc
 	if err == nil {
 		klog.V(3).Infof("PollUntilDone for Deallocate(%v) for %s success",
 			instanceIDs, scaleSet.Name)
-		// Set the status of the instances to deallocated only if PollUntilDone succeeds
+		// Set the status of the instances to deallocated only if PollUntilDone succeeds.
+		// Use setInstanceStatusIfNotSuperseded to avoid overwriting state set by a newer
+		// concurrent operation (e.g., startInstance setting InstanceRunning, or DeleteInstances
+		// setting InstanceDeleting) that occurred while this goroutine was waiting.
+		// In the happy path, instance state here is InstanceDeallocating (set proactively by
+		// deallocateInstances before launching this goroutine). InstanceRunning and InstanceDeleting
+		// are only possible if a concurrent startInstance or DeleteInstances raced with this
+		// deallocate operation — those newer operations take precedence.
 		for _, instance := range instancesToDeallocate {
-			scaleSet.setInstanceStatusByProviderID(instance.Name, cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated})
+			scaleSet.setInstanceStatusIfNotSuperseded(instance.Name,
+				cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated},
+				[]cloudprovider.InstanceState{cloudprovider.InstanceRunning, cloudprovider.InstanceDeleting})
 		}
 		return
 	}
