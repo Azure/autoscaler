@@ -698,6 +698,10 @@ func (scaleSet *ScaleSet) waitForDeallocateInstances(poller *runtime.Poller[armc
 		// Use setInstanceStatusIfNotSuperseded to avoid overwriting state set by a newer
 		// concurrent operation (e.g., startInstance setting InstanceRunning, or DeleteInstances
 		// setting InstanceDeleting) that occurred while this goroutine was waiting.
+		// In the happy path, instance state here is InstanceDeallocating (set proactively by
+		// deallocateInstances before launching this goroutine). InstanceRunning and InstanceDeleting
+		// are only possible if a concurrent startInstance or DeleteInstances raced with this
+		// deallocate operation — those newer operations take precedence.
 		for _, instance := range instancesToDeallocate {
 			scaleSet.setInstanceStatusIfNotSuperseded(instance.Name,
 				cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated},
