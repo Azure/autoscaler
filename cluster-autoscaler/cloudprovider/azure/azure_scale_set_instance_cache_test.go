@@ -353,6 +353,66 @@ func TestSetInstanceStatusByProviderID(t *testing.T) {
 	assert.Equal(t, 0, len(actualInstances))
 }
 
+func TestSetInstanceStatusIfNotSuperseded(t *testing.T) {
+	TestBeforeEachNoInstanceCacheResetNeededHelper(t)
+	scaleSet.scaleDownPolicy = deallocate.Deallocate
+
+	providerID := azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, 0)
+
+	t.Run("updates state when not superseded", func(t *testing.T) {
+		// Instance starts as Deallocated, target is Deallocated — no superseding states match
+		scaleSet.setInstanceStatusIfNotSuperseded(providerID,
+			cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated},
+			[]cloudprovider.InstanceState{cloudprovider.InstanceRunning, cloudprovider.InstanceDeleting})
+		actual, found, err := scaleSet.getInstanceByProviderID(providerID)
+		assert.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, cloudprovider.InstanceDeallocated, actual.Status.State)
+	})
+
+	t.Run("skips update when current state is in superseding list", func(t *testing.T) {
+		// Set instance to Running (simulating concurrent startInstance)
+		scaleSet.setInstanceStatusByProviderID(providerID,
+			cloudprovider.InstanceStatus{State: cloudprovider.InstanceRunning})
+
+		// Try to set to Deallocated — should be skipped because Running is superseding
+		scaleSet.setInstanceStatusIfNotSuperseded(providerID,
+			cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated},
+			[]cloudprovider.InstanceState{cloudprovider.InstanceRunning, cloudprovider.InstanceDeleting})
+		actual, found, err := scaleSet.getInstanceByProviderID(providerID)
+		assert.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, cloudprovider.InstanceRunning, actual.Status.State)
+	})
+
+	t.Run("skips update when current state is Deleting", func(t *testing.T) {
+		scaleSet.setInstanceStatusByProviderID(providerID,
+			cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeleting})
+
+		scaleSet.setInstanceStatusIfNotSuperseded(providerID,
+			cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated},
+			[]cloudprovider.InstanceState{cloudprovider.InstanceRunning, cloudprovider.InstanceDeleting})
+		actual, found, err := scaleSet.getInstanceByProviderID(providerID)
+		assert.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, cloudprovider.InstanceDeleting, actual.Status.State)
+	})
+
+	t.Run("updates when current state is not in superseding list", func(t *testing.T) {
+		// Set to Deallocating — not in the superseding list [Running, Deleting]
+		scaleSet.setInstanceStatusByProviderID(providerID,
+			cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocating})
+
+		scaleSet.setInstanceStatusIfNotSuperseded(providerID,
+			cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated},
+			[]cloudprovider.InstanceState{cloudprovider.InstanceRunning, cloudprovider.InstanceDeleting})
+		actual, found, err := scaleSet.getInstanceByProviderID(providerID)
+		assert.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, cloudprovider.InstanceDeallocated, actual.Status.State)
+	})
+}
+
 // beforeEachNoInstanceCacheResetNeededHelper has 1 instance in the instanceCache with state = deallocated.
 func TestBeforeEachNoInstanceCacheResetNeededHelper(t *testing.T) {
 	ctrl = gomock.NewController(t)

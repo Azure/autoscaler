@@ -278,3 +278,118 @@ func TestDeallocateModeWaitForStartInstances(t *testing.T) {
 		assert.Lessf(t, lastInstanceCacheRefreshTime, time.Now(), "instanceCache should be invalidated")
 	})
 }
+
+func TestWaitForDeallocateInstances(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	expectedVMSSVMs := newTestVMSSVMList(3)
+	manager := newTestAzureManager(t)
+
+	instances := make([]cloudprovider.Instance, len(expectedVMSSVMs))
+	for i, vm := range expectedVMSSVMs {
+		instances[i] = cloudprovider.Instance{
+			Id: azurePrefix + *vm.ID,
+			Status: &cloudprovider.InstanceStatus{
+				State: cloudprovider.InstanceDeallocating,
+			},
+		}
+	}
+
+	instanceRefs := []*azureRef{
+		{Name: azurePrefix + *expectedVMSSVMs[0].ID},
+		{Name: azurePrefix + *expectedVMSSVMs[1].ID},
+		{Name: azurePrefix + *expectedVMSSVMs[2].ID},
+	}
+	requiredIds := &compute.VirtualMachineScaleSetVMInstanceRequiredIDs{
+		InstanceIds: &[]string{
+			*expectedVMSSVMs[0].InstanceID,
+			*expectedVMSSVMs[1].InstanceID,
+			*expectedVMSSVMs[2].InstanceID,
+		},
+	}
+
+	newASG := func() *ScaleSet {
+		asg := newTestScaleSet(manager, testASG)
+		asg.scaleDownPolicy = deallocate.Deallocate
+		asg.instancesRefreshPeriod = defaultVmssInstancesRefreshPeriod
+		// Deep copy instances to avoid sharing Status pointers between sub-tests
+		asg.instanceCache = make([]cloudprovider.Instance, len(instances))
+		for i, inst := range instances {
+			statusCopy := *inst.Status
+			asg.instanceCache[i] = cloudprovider.Instance{
+				Id:     inst.Id,
+				Status: &statusCopy,
+			}
+		}
+		asg.instanceMutex.Lock()
+		asg.lastInstanceRefresh = time.Now()
+		asg.instanceMutex.Unlock()
+		return asg
+	}
+
+	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
+	manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+	t.Run("success: instances set to deallocated", func(t *testing.T) {
+		asg := newASG()
+		mockVMSSClient.EXPECT().WaitForDeallocateInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).
+			Return(&http.Response{StatusCode: http.StatusOK}, nil).Times(1)
+
+		asg.waitForDeallocateInstances(nil, instanceRefs, requiredIds)
+
+		for _, vm := range asg.instanceCache {
+			assert.Equal(t, cloudprovider.InstanceDeallocated, vm.Status.State)
+		}
+		asg.instanceMutex.Lock()
+		assert.False(t, asg.lastInstanceRefresh.IsZero(), "instanceCache should not be invalidated on success")
+		asg.instanceMutex.Unlock()
+	})
+
+	t.Run("success: instance started concurrently is not overwritten", func(t *testing.T) {
+		asg := newASG()
+		// Simulate a concurrent startInstance having set instance 1 to Running
+		// while the deallocate call was in flight
+		asg.instanceCache[1].Status.State = cloudprovider.InstanceRunning
+		mockVMSSClient.EXPECT().WaitForDeallocateInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).
+			Return(&http.Response{StatusCode: http.StatusOK}, nil).Times(1)
+
+		asg.waitForDeallocateInstances(nil, instanceRefs, requiredIds)
+
+		assert.Equal(t, cloudprovider.InstanceDeallocated, asg.instanceCache[0].Status.State)
+		assert.Equal(t, cloudprovider.InstanceDeallocated, asg.instanceCache[2].Status.State)
+		// Instance 1 should remain Running — the newer startInstance operation takes precedence
+		assert.Equal(t, cloudprovider.InstanceRunning, asg.instanceCache[1].Status.State)
+	})
+
+	t.Run("success: instance being deleted concurrently is not overwritten", func(t *testing.T) {
+		asg := newASG()
+		// Simulate a concurrent DeleteInstances having set instance 2 to Deleting
+		asg.instanceCache[2].Status.State = cloudprovider.InstanceDeleting
+		mockVMSSClient.EXPECT().WaitForDeallocateInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).
+			Return(&http.Response{StatusCode: http.StatusOK}, nil).Times(1)
+
+		asg.waitForDeallocateInstances(nil, instanceRefs, requiredIds)
+
+		assert.Equal(t, cloudprovider.InstanceDeallocated, asg.instanceCache[0].Status.State)
+		assert.Equal(t, cloudprovider.InstanceDeallocated, asg.instanceCache[1].Status.State)
+		// Instance 2 should remain Deleting
+		assert.Equal(t, cloudprovider.InstanceDeleting, asg.instanceCache[2].Status.State)
+	})
+
+	t.Run("failure: deallocate cache is invalidated", func(t *testing.T) {
+		asg := newASG()
+		timeBeforeCall := time.Now()
+		mockVMSSClient.EXPECT().WaitForDeallocateInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).
+			Return(&http.Response{StatusCode: http.StatusInternalServerError}, fmt.Errorf("some deallocate error")).Times(1)
+
+		asg.waitForDeallocateInstances(nil, instanceRefs, requiredIds)
+
+		asg.instanceMutex.Lock()
+		assert.True(t, asg.lastInstanceRefresh.Before(timeBeforeCall), "instanceCache should be invalidated on failure")
+		asg.instanceMutex.Unlock()
+		for _, vm := range asg.instanceCache {
+			assert.Equal(t, cloudprovider.InstanceDeallocating, vm.Status.State)
+		}
+	})
+}
