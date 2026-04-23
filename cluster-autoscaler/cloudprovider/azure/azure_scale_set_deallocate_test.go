@@ -365,7 +365,52 @@ func TestWaitForDeallocateInstances(t *testing.T) {
 		asg.instanceMutex.Unlock()
 	})
 
-	t.Run("failure: cache is invalidated", func(t *testing.T) {
+	t.Run("success: instance started concurrently is not overwritten", func(t *testing.T) {
+		// Reset states to Deallocating (simulating in-flight deallocate)
+		for i := range asg.instanceCache {
+			asg.instanceCache[i].Status.State = cloudprovider.InstanceDeallocating
+		}
+		// Simulate a concurrent startInstance having set instance 1 to Running
+		// while the deallocate poller was in flight
+		asg.instanceCache[1].Status.State = cloudprovider.InstanceRunning
+
+		asg.instanceMutex.Lock()
+		asg.lastInstanceRefresh = time.Now()
+		asg.instanceMutex.Unlock()
+
+		poller := newFakeDeallocatePoller(&fakeSuccessHandler[armcompute.VirtualMachineScaleSetsClientDeallocateResponse]{})
+		asg.waitForDeallocateInstances(poller, instanceRefs, []*string{})
+
+		// Instance 0 and 2 should transition to Deallocated
+		assert.Equal(t, cloudprovider.InstanceDeallocated, asg.instanceCache[0].Status.State)
+		assert.Equal(t, cloudprovider.InstanceDeallocated, asg.instanceCache[2].Status.State)
+		// Instance 1 should remain Running — the newer startInstance operation takes precedence
+		assert.Equal(t, cloudprovider.InstanceRunning, asg.instanceCache[1].Status.State)
+	})
+
+	t.Run("success: instance being deleted concurrently is not overwritten", func(t *testing.T) {
+		// Reset states to Deallocating
+		for i := range asg.instanceCache {
+			asg.instanceCache[i].Status.State = cloudprovider.InstanceDeallocating
+		}
+		// Simulate a concurrent DeleteInstances having set instance 2 to Deleting
+		asg.instanceCache[2].Status.State = cloudprovider.InstanceDeleting
+
+		asg.instanceMutex.Lock()
+		asg.lastInstanceRefresh = time.Now()
+		asg.instanceMutex.Unlock()
+
+		poller := newFakeDeallocatePoller(&fakeSuccessHandler[armcompute.VirtualMachineScaleSetsClientDeallocateResponse]{})
+		asg.waitForDeallocateInstances(poller, instanceRefs, []*string{})
+
+		// Instance 0 and 1 should transition to Deallocated
+		assert.Equal(t, cloudprovider.InstanceDeallocated, asg.instanceCache[0].Status.State)
+		assert.Equal(t, cloudprovider.InstanceDeallocated, asg.instanceCache[1].Status.State)
+		// Instance 2 should remain Deleting
+		assert.Equal(t, cloudprovider.InstanceDeleting, asg.instanceCache[2].Status.State)
+	})
+
+	t.Run("failure: deallocate cache is invalidated", func(t *testing.T) {
 		// Reset states to Deallocating
 		for i := range asg.instanceCache {
 			asg.instanceCache[i].Status.State = cloudprovider.InstanceDeallocating
