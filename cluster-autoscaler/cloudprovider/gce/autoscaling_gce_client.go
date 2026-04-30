@@ -80,6 +80,14 @@ const (
 	// be scaled up because the associated reservation is not compatible with the node group.
 	ErrorReservationIncompatible = "RESERVATION_INCOMPATIBLE"
 
+	// ErrorAutomaticReservationsNotAvailable happens if there is no automatic reservation with
+	// matching prespun instance properties, when using affinity ANY_RESERVATION_THEN_FAIL.
+	ErrorAutomaticReservationsNotAvailable = "AUTOMATIC_RESERVATIONS_NOT_AVAILABLE"
+
+	// ErrorAutomaticReservationsNoCapacity happens when trying to create an instance with
+	// affinity ANY_RESERVATION_THEN_FAIL but all reservations are full.
+	ErrorAutomaticReservationsNoCapacity = "AUTOMATIC_RESERVATIONS_NO_CAPACITY"
+
 	// ErrorUnsupportedTpuConfiguration is an error code for InstanceErrorInfo if the
 	// node group couldn't be scaled up because of invalid TPU configuration.
 	ErrorUnsupportedTpuConfiguration = "UNSUPPORTED_TPU_CONFIGURATION"
@@ -105,6 +113,8 @@ var (
 		regexp.MustCompile("Reservation (.*) is incorrect for the requested resources"),
 		regexp.MustCompile("Zone does not currently have sufficient capacity for the requested resources"),
 	}
+	automaticReservationsNoCapacityRegexp   = regexp.MustCompile("All automatic reservations in your project, or shared with your project, are fully consumed")
+	automaticReservationsNotAvailableRegexp = regexp.MustCompile("There is no automatic reservation matching the instance in your project")
 )
 
 // GceInstance extends cloudprovider.Instance with GCE specific numeric id.
@@ -142,7 +152,7 @@ type AutoscalingGceClient interface {
 	// modifying resources
 	ResizeMig(GceRef, int64) error
 	DeleteInstances(migRef GceRef, instances []GceRef) error
-	CreateInstances(GceRef, string, int64, []string) error
+	CreateInstances(GceRef, string, int64, []string) ([]string, error)
 
 	// WaitForOperation can be used to poll GCE operations until completion/timeout using WAIT calls.
 	// Calling this is normally not needed when interacting with the client, other methods should call it internally.
@@ -294,24 +304,27 @@ func (client *autoscalingGceClientV1) ResizeMig(migRef GceRef, size int64) error
 	return client.WaitForOperation(op.Name, op.OperationType, migRef.Project, migRef.Zone)
 }
 
-func (client *autoscalingGceClientV1) CreateInstances(migRef GceRef, baseName string, delta int64, existingInstanceProviderIds []string) error {
+func (client *autoscalingGceClientV1) CreateInstances(migRef GceRef, baseName string, delta int64, existingInstanceProviderIds []string) ([]string, error) {
 	registerRequest("instance_group_managers", "create_instances")
 	ctx, cancel := context.WithTimeout(context.Background(), client.operationPerCallTimeout)
 	defer cancel()
 	req := gce.InstanceGroupManagersCreateInstancesRequest{}
 	instanceNames := instanceIdsToNamesMap(existingInstanceProviderIds)
 	req.Instances = make([]*gce.PerInstanceConfig, 0, delta)
-	for i := int64(0); i < delta; i++ {
+	createdIds := make([]string, delta)
+	for i := range delta {
 		newInstanceName := generateInstanceName(baseName, instanceNames)
 		instanceNames[newInstanceName] = true
 		req.Instances = append(req.Instances, &gce.PerInstanceConfig{Name: newInstanceName})
+		ref := GceRef{migRef.Project, migRef.Zone, newInstanceName}
+		createdIds[i] = ref.ToProviderId()
 	}
 
 	op, err := client.gceService.InstanceGroupManagers.CreateInstances(migRef.Project, migRef.Zone, migRef.Name, &req).Context(ctx).Do()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return client.WaitForOperation(op.Name, op.OperationType, migRef.Project, migRef.Zone)
+	return createdIds, client.WaitForOperation(op.Name, op.OperationType, migRef.Project, migRef.Zone)
 }
 
 func instanceIdsToNamesMap(instanceProviderIds []string) map[string]bool {
@@ -610,6 +623,16 @@ func GetErrorInfo(errorCode, errorMessage, instanceStatus string, previousErrorI
 			ErrorClass: cloudprovider.OtherErrorClass,
 			ErrorCode:  ErrorUnsupportedTpuConfiguration,
 		}
+	} else if isAutomaticReservationNotAvailableError(errorMessage) {
+		return &cloudprovider.InstanceErrorInfo{
+			ErrorClass: cloudprovider.OtherErrorClass,
+			ErrorCode:  ErrorAutomaticReservationsNotAvailable,
+		}
+	} else if isAutomaticReservationsNoCapacity(errorMessage) {
+		return &cloudprovider.InstanceErrorInfo{
+			ErrorClass: cloudprovider.OtherErrorClass,
+			ErrorCode:  ErrorAutomaticReservationsNoCapacity,
+		}
 	} else if isInstanceStatusNotRunningYet(instanceStatus) {
 		if previousErrorInfo != nil {
 			// keep the current error
@@ -699,6 +722,14 @@ func isReservationCapacityExceeded(errorMessage string) bool {
 func isReservationIncompatible(errorMessage string) bool {
 	pattern := "No available resources in specified reservations"
 	return strings.Contains(errorMessage, pattern)
+}
+
+func isAutomaticReservationNotAvailableError(errorMessage string) bool {
+	return automaticReservationsNotAvailableRegexp.MatchString(errorMessage)
+}
+
+func isAutomaticReservationsNoCapacity(errorMessage string) bool {
+	return automaticReservationsNoCapacityRegexp.MatchString(errorMessage)
 }
 
 func isInvalidReservationError(errorMessage string) bool {
