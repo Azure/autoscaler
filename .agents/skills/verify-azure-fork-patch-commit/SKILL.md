@@ -35,6 +35,8 @@ Ask the PR author to provide these facts if they are not already present:
 
 - target release branch
 - upstream base tag
+- candidate tag name
+- official tag name
 - current fork patch commit SHA
 - previous release line fork patch commit SHA used as the comparison baseline
 - list of intentionally changed files or feature areas relative to the previous line
@@ -169,6 +171,8 @@ Fork patch commit: <sha>
 Previous line fork patch commit: <sha>
 Target release branch: cluster-autoscaler-release-1.35.2-aks
 Upstream tag: cluster-autoscaler-1.35.2
+Candidate tag: v1.35.2-aks-1-candidate
+Official tag: v1.35.2-aks-1
 Expected fork-owned areas:
 - azure provider
 - config/dynamic

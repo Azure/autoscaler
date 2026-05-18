@@ -170,17 +170,19 @@ The tag scheme is part of correctness.
 
 Initial release:
 
-- candidate tag: `<fork branch>-candidate`
-- official tag: `<fork branch>`
+- candidate tag: `vX.Y.Z-aks-1-candidate`
+- official tag: `vX.Y.Z-aks-1`
 
-Revision release:
+Later revision release:
 
-- candidate tag: `<fork branch>-N-candidate`
-- official tag: `<fork branch>-N`
+- candidate tag: `vX.Y.Z-aks-N-candidate`
+- official tag: `vX.Y.Z-aks-N`
+
+The initial release starts at `N=1`, and each later respin increments `N`.
 
 Review checks:
 
-- the candidate tag name matches the branch and release type
+- the candidate tag name matches the version and release number
 - the candidate tag points at the PR commit being reviewed
 - the official tag is not used prematurely while the candidate is still under validation
 
@@ -219,8 +221,8 @@ To make review faster, ask authors to include a short release manifest in the PR
 Release type: new patch version
 Target branch: cluster-autoscaler-release-1.35.2-aks
 Upstream tag: cluster-autoscaler-1.35.2
-Candidate tag: cluster-autoscaler-release-1.35.2-aks-candidate
-Official tag: cluster-autoscaler-release-1.35.2-aks
+Candidate tag: v1.35.2-aks-1-candidate
+Official tag: v1.35.2-aks-1
 Cherry-picks:
 - <sha> main AKS fork delta
 - <sha> follow-up fix

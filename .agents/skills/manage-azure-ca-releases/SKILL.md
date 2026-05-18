@@ -17,7 +17,7 @@ description: 'Manage Azure Cluster Autoscaler fork releases - new minor versions
   2. create a separate working branch from that release branch,
   3. open a PR from the working branch back into the release branch with the AKS commits.
 - This skill covers the Git workflow and release tags for this repo.
-- Tag the PR commit with a `-candidate` tag first, build an image from that candidate tag, then add the official tag after the image is fully built.
+- Tag the PR commit with a `vX.Y.Z-aks-N-candidate` tag first, build an image from that candidate tag, then add the matching `vX.Y.Z-aks-N` official tag after the image is fully built.
 - Do not cut releases from `master-azure`.
 - `master-azure` is only a source of candidate Azure-only commits that may need to be backported.
 - Any resolved conflicts must be documented in the PR description or in the commit that resolved them.
@@ -61,11 +61,11 @@ As of May 2026, that means you must verify whether `1.33` is still fully support
 ## Naming
 
 - Release branches: `cluster-autoscaler-release-x.y.z-aks`
-- Initial candidate tag: `cluster-autoscaler-release-x.y.z-aks-candidate`
-- Initial official tag: `cluster-autoscaler-release-x.y.z-aks`
-- Revision candidate tag: `cluster-autoscaler-release-x.y.z-aks-N-candidate`
-- Revision official tag: `cluster-autoscaler-release-x.y.z-aks-N`
-- Older tags such as `v1.31.4-aks-1` exist in the repo, but new AKS release tags should use the branch-name-based scheme above.
+- Initial candidate tag: `vX.Y.Z-aks-1-candidate`
+- Initial official tag: `vX.Y.Z-aks-1`
+- Later revision candidate tag: `vX.Y.Z-aks-N-candidate`
+- Later revision official tag: `vX.Y.Z-aks-N`
+- The initial release for a branch starts at `N=1`, and each later respin increments `N`.
 
 Keep the branch name tied to the upstream patch version base. If you need a small respin on top of the same upstream patch version, keep the branch name and use a new revision tag.
 
@@ -97,9 +97,9 @@ git switch -c <topic-branch> cluster-autoscaler-release-1.36.0-aks
 8. Evaluate whether any `master-azure`-only compatibility commits must also be applied on the working branch.
 9. Run validation on the working branch.
 10. Open a PR from the working branch into `cluster-autoscaler-release-1.36.0-aks`.
-11. Tag the PR commit with `cluster-autoscaler-release-1.36.0-aks-candidate`.
+11. Tag the PR commit with `v1.36.0-aks-1-candidate`.
 12. Build an image from that candidate tag.
-13. After the PR lands and the image from that candidate tag is fully built, add the official tag `cluster-autoscaler-release-1.36.0-aks`.
+13. After the PR lands and the image from that candidate tag is fully built, add the official tag `v1.36.0-aks-1`.
 
 Do not merge `master-azure` forward to create a new minor version release.
 
@@ -130,9 +130,9 @@ git switch -c <topic-branch> cluster-autoscaler-release-1.35.2-aks
 6. Re-evaluate `master-azure`-only candidates only if they are still needed and still compatible.
 7. Run validation on the working branch.
 8. Open a PR from the working branch into `cluster-autoscaler-release-1.35.2-aks`.
-9. Tag the PR commit with `cluster-autoscaler-release-1.35.2-aks-candidate`.
+9. Tag the PR commit with `v1.35.2-aks-1-candidate`.
 10. Build an image from that candidate tag.
-11. After the PR lands and the image from that candidate tag is fully built, add the official tag `cluster-autoscaler-release-1.35.2-aks`.
+11. After the PR lands and the image from that candidate tag is fully built, add the official tag `v1.35.2-aks-1`.
 
 Do not create a new patch version release by merging forward the previous AKS branch. Rebuild from the upstream tag for that patch version and replay the AKS stack.
 
@@ -157,9 +157,9 @@ git cherry-pick -x <sha>
 5. If the change needs manual conflict resolution or adaptation, document every resolved conflict in the PR description or in the resolving commit, including the affected files and rationale.
 6. Run validation on the working branch.
 7. Open a PR from the working branch into `cluster-autoscaler-release-1.35.0-aks`.
-8. Tag the PR commit with the next candidate tag, for example `cluster-autoscaler-release-1.35.0-aks-1-candidate`.
+8. Tag the PR commit with the next candidate tag, for example `v1.35.0-aks-2-candidate`.
 9. Build an image from that candidate tag.
-10. After the PR lands and the image from that candidate tag is fully built, add the matching official tag, for example `cluster-autoscaler-release-1.35.0-aks-1`.
+10. After the PR lands and the image from that candidate tag is fully built, add the matching official tag, for example `v1.35.0-aks-2`.
 
 Use a revision only for a small AKS-only respin on top of the same upstream patch version base. If the upstream patch version changes, make a new branch for that patch version instead.
 
@@ -250,8 +250,8 @@ For the review pass, use the `verify-azure-ca-release` skill so reviewers can ch
 - Keep release branches linear.
 - Do not merge `master-azure` into release branches.
 - Document every resolved conflict in the PR description or in the commit that resolved it. Include the affected files, the chosen resolution, and why it is correct for that release line.
-- Use `<fork branch>-candidate` for the initial release candidate tag and `<fork branch>` for the initial official tag.
-- Use `<fork branch>-N-candidate` for revision candidate tags and `<fork branch>-N` for revision official tags.
+- Use `vX.Y.Z-aks-1-candidate` for the initial release candidate tag and `vX.Y.Z-aks-1` for the initial official tag.
+- Use `vX.Y.Z-aks-N-candidate` for later revision candidate tags and `vX.Y.Z-aks-N` for later revision official tags.
 - Record for each AKS release:
   - upstream tag
   - main AKS fork delta commit
