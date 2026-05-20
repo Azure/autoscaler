@@ -70,7 +70,6 @@ func helmValuesForFastScaleDown() map[string]interface{} {
 		},
 	}
 }
-
 func init() {
 	flag.StringVar(&resourceGroup, "resource-group", "", "resource group containing cluster-autoscaler-managed resources (the MC_ node resource group)")
 	flag.StringVar(&clusterName, "cluster-name", "", "Cluster API Cluster name (CI only)")
