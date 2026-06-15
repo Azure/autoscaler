@@ -11,14 +11,6 @@ This document records the Azure fork baseline that was previously maintained int
 
 This commit is the baseline reference point for the forked Azure-specific changes discussed here.
 
-## Why The Fork Was Moved To GitHub
-
-The fork was moved from an internal-only location to GitHub in order to:
-
-- add better visibility into Azure-managed releases
-- utilize existing AKS/upstream infrastructure to create managed releases
-- support the ongoing effort to fully defork Azure-specific changes over time
-
 ## Primary Categories Of Fork Changes
 
 The main fork-specific features introduced by the baseline commit fall into two primary categories.
@@ -83,6 +75,21 @@ Examples:
 - `.azuredevops/pull_request_template.md`
 - `.pipelines/cluster-autoscaler.yaml`
 - `builder/Dockerfile`
+
+## Ongoing Fork Deltas
+
+The baseline commit above is a useful starting point, but it is not necessarily a complete description of every fork-specific change made over time.
+
+Additional fork changes may be introduced on top of the baseline in later Azure release branches.
+
+The easiest way to see what has changed for a given release is to compare the Azure release branch with its upstream counterpart.
+
+Examples:
+
+- compare an Azure-managed branch such as `master-azure` with the corresponding upstream branch
+- compare a versioned Azure release branch with the matching upstream release branch for that Kubernetes/autoscaler version
+
+This branch-to-branch comparison is the most reliable way to understand the current fork delta at any point in time.
 
 ## Minimizing Mixed Fork / Non-Fork Files
 
