@@ -1705,6 +1705,13 @@ func TestHandleInstanceCreationErrors(t *testing.T) {
 	assert.NoError(t, err)
 	mockMetrics.AssertCalled(t, "RegisterFailedScaleUp", metrics.FailedScaleUpReason("RESOURCE_POOL_EXHAUSTED"), "", "", "")
 	mockMetrics.AssertCalled(t, "RegisterFailedNodeCreations", metrics.FailedScaleUpReason("RESOURCE_POOL_EXHAUSTED"), 2)
+
+	// Verify the node group is in backoff with the correct error code
+	safety := clusterstate.NodeGroupScaleUpSafety(mockedNodeGroup, now)
+	assert.False(t, safety.SafeToScale, "node group should not be safe to scale")
+	assert.True(t, safety.BackoffStatus.IsBackedOff, "node group should be backed off")
+	assert.Equal(t, "RESOURCE_POOL_EXHAUSTED", safety.BackoffStatus.ErrorInfo.ErrorCode)
+	assert.Equal(t, cloudprovider.OutOfResourcesErrorClass, safety.BackoffStatus.ErrorInfo.ErrorClass)
 }
 
 func TestFailedScaleUpWithDra(t *testing.T) {
@@ -1759,6 +1766,13 @@ func TestFailedScaleUpWithDra(t *testing.T) {
 	assert.NoError(t, err)
 	mockMetrics.AssertCalled(t, "RegisterFailedScaleUp", metrics.FailedScaleUpReason("RESOURCE_POOL_EXHAUSTED"), "", "", "custom.driver,dra.net")
 	mockMetrics.AssertCalled(t, "RegisterFailedNodeCreations", metrics.FailedScaleUpReason("RESOURCE_POOL_EXHAUSTED"), 1)
+
+	// Verify the node group is in backoff with the correct error code
+	safety := clusterstate.NodeGroupScaleUpSafety(mockedNodeGroup, now)
+	assert.False(t, safety.SafeToScale, "node group should not be safe to scale")
+	assert.True(t, safety.BackoffStatus.IsBackedOff, "node group should be backed off")
+	assert.Equal(t, "RESOURCE_POOL_EXHAUSTED", safety.BackoffStatus.ErrorInfo.ErrorCode)
+	assert.Equal(t, cloudprovider.OutOfResourcesErrorClass, safety.BackoffStatus.ErrorInfo.ErrorClass)
 }
 
 func TestFailedScaleUpWithDraAndGpu(t *testing.T) {

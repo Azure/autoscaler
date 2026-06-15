@@ -74,6 +74,8 @@ spec:
             {{- range .Values.autoscalingGroups }}
             {{- if eq $.Values.cloudProvider "hetzner" }}
             - --nodes={{ .minSize }}:{{ .maxSize }}:{{ .instanceType }}:{{ .region }}:{{ .name }}
+            {{- else if .policy }}
+            - --nodes={{ .minSize }}:{{ .maxSize }}:{{ .policy }}:{{ .name }}
             {{- else }}
             - --nodes={{ .minSize }}:{{ .maxSize }}:{{ .name }}
             {{- end }}
