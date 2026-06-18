@@ -26,8 +26,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -68,7 +66,6 @@ type Environment struct {
 	Ctx            context.Context
 	K8s            client.Client
 	VMSS           *armcompute.VirtualMachineScaleSetsClient
-	VMSSVM         *armcompute.VirtualMachineScaleSetVMsClient
 	ResourceGroup  string
 	SubscriptionID string
 	TenantID       string
@@ -89,9 +86,6 @@ func NewEnvironment(resourceGroup string, helm *HelmConfig) *Environment {
 	Expect(err).NotTo(HaveOccurred())
 
 	env.VMSS, err = armcompute.NewVirtualMachineScaleSetsClient(env.SubscriptionID, azCred, nil)
-	Expect(err).NotTo(HaveOccurred())
-
-	env.VMSSVM, err = armcompute.NewVirtualMachineScaleSetVMsClient(env.SubscriptionID, azCred, nil)
 	Expect(err).NotTo(HaveOccurred())
 
 	restConfig, err := config.GetConfig()
@@ -229,87 +223,4 @@ func (env *Environment) ReadyNodeCount() (int, error) {
 		}
 	}
 	return readyCount, nil
-}
-
-// ReadyNodeCountForPool returns the number of Ready nodes with the given agentpool label.
-func (env *Environment) ReadyNodeCountForPool(poolName string) (int, error) {
-	nodes := &corev1.NodeList{}
-	if err := env.K8s.List(env.Ctx, nodes, client.MatchingLabels{"agentpool": poolName}); err != nil {
-		return 0, err
-	}
-	readyCount := 0
-	for _, node := range nodes.Items {
-		for _, cond := range node.Status.Conditions {
-			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
-				readyCount++
-				break
-			}
-		}
-	}
-	return readyCount, nil
-}
-
-// VMSSNameForPool discovers the VMSS name for a given AKS nodepool by matching
-// the VMSS name prefix "aks-<poolName>-" in the MC_ resource group.
-func (env *Environment) VMSSNameForPool(poolName string) string {
-	prefix := "aks-" + poolName + "-"
-	pager := env.VMSS.NewListPager(env.ResourceGroup, nil)
-	for pager.More() {
-		page, err := pager.NextPage(env.Ctx)
-		Expect(err).NotTo(HaveOccurred())
-		for _, vmss := range page.Value {
-			if strings.HasPrefix(*vmss.Name, prefix) {
-				return *vmss.Name
-			}
-		}
-	}
-	Fail("no VMSS found for pool " + poolName + " in resource group " + env.ResourceGroup)
-	return ""
-}
-
-// VMSSVMPowerStates returns a map of VM instance ID to power state code
-// (e.g., "PowerState/running", "PowerState/deallocated") for all VMs in a VMSS.
-func (env *Environment) VMSSVMPowerStates(vmssName string) map[string]string {
-	states := make(map[string]string)
-	expand := "instanceView"
-	pager := env.VMSSVM.NewListPager(env.ResourceGroup, vmssName, &armcompute.VirtualMachineScaleSetVMsClientListOptions{
-		Expand: &expand,
-	})
-	for pager.More() {
-		page, err := pager.NextPage(env.Ctx)
-		Expect(err).NotTo(HaveOccurred())
-		for _, vm := range page.Value {
-			powerState := "unknown"
-			if vm.Properties != nil && vm.Properties.InstanceView != nil {
-				for _, status := range vm.Properties.InstanceView.Statuses {
-					if status.Code != nil && strings.HasPrefix(*status.Code, "PowerState/") {
-						powerState = *status.Code
-					}
-				}
-			}
-			states[*vm.InstanceID] = powerState
-		}
-	}
-	return states
-}
-
-// GetCASStatus reads the cluster-autoscaler-status ConfigMap from kube-system
-// and returns the "status" data field.
-func (env *Environment) GetCASStatus() (string, error) {
-	cm := &corev1.ConfigMap{}
-	err := env.K8s.Get(env.Ctx, client.ObjectKey{
-		Namespace: "kube-system",
-		Name:      "cluster-autoscaler-status",
-	}, cm)
-	if err != nil {
-		return "", err
-	}
-	return cm.Data["status"], nil
-}
-
-// RunAzCLI runs an az CLI command and returns combined stdout/stderr output.
-func RunAzCLI(args ...string) (string, error) {
-	cmd := exec.Command("az", args...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
 }
