@@ -235,14 +235,15 @@ func (scaleSet *ScaleSet) instanceStatusFromVM(vm *armcompute.VirtualMachineScal
 		status.State = cloudprovider.InstanceCreating
 	case VMProvisioningStateFailed:
 		status.State = cloudprovider.InstanceRunning
-
 		klog.V(3).Infof("VM %s reports failed provisioning state with power state: %s, scale down mode: %s, eligible for fast delete: %s", ptr.Deref(vm.ID, ""), powerState, scaleSet.scaleDownPolicy, strconv.FormatBool(scaleSet.enableFastDeleteOnFailedProvisioning))
 		if scaleSet.scaleDownPolicy == deallocate.Deallocate {
 			// Deallocate mode: detect failed-to-start VMs.
 			if !isRunningVmPowerState(powerState) {
 				// VM failed to start — remains deallocated or stopped.
 				// Signal as creation error to trigger backoff via handleInstanceCreationErrors.
-				// Failed VMs will be deleted by deleteCreatedNodesWithErrors.
+				// Failed VMs will be cleaned up by deleteCreatedNodesWithErrors, which for
+				// deallocate mode calls ForceDeleteNodes → deallocateInstances (returning
+				// the VM to a clean deallocated state for the next scale-up after backoff).
 				status.State = cloudprovider.InstanceCreating
 				status.ErrorInfo = &cloudprovider.InstanceErrorInfo{
 					ErrorClass:   cloudprovider.OutOfResourcesErrorClass,
