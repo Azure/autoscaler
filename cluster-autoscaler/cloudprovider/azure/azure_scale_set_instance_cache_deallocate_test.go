@@ -50,10 +50,10 @@ func TestInstanceStatusFromVMErrorCodeByScaleDownModeSelfHosted(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			provider := newTestProvider(t)
 			scaleSet := &ScaleSet{
-				azureRef:        azureRef{Name: "testScaleSet"},
-				manager:         provider.azureManager,
-				minSize:         1,
-				maxSize:         5,
+				azureRef: azureRef{Name: "testScaleSet"},
+				manager:  provider.azureManager,
+				minSize:  1,
+				maxSize:  5,
 				// self-hosted: fast delete disabled (enableFastDeleteOnFailedProvisioning defaults to false)
 				scaleDownPolicy: tt.scaleDownPolicy,
 			}
