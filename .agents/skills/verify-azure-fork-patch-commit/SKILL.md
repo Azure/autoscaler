@@ -114,10 +114,11 @@ For each resolved conflict, expect:
 - the chosen resolution
 - why that resolution is correct for this release line
 - whether the resolution intentionally changes behavior from the previous line
+- confirmation that the resolution was reviewed and approved by the requestor before it was applied
 
 Notes such as `w/basic merge conflict resolution` are not sufficient by themselves. The reviewer should be able to reconstruct the actual decision.
 
-Fail if manual conflict resolution happened but the rationale is undocumented.
+Fail if manual conflict resolution happened but the rationale is undocumented or shows no evidence of requestor review.
 
 ### 5. Verify Provenance
 
@@ -171,8 +172,8 @@ Fork patch commit: <sha>
 Previous line fork patch commit: <sha>
 Target release branch: cluster-autoscaler-release-1.35.2-aks
 Upstream tag: cluster-autoscaler-1.35.2
-Candidate tag: v1.35.2-aks-1-candidate
-Official tag: v1.35.2-aks-1
+Candidate tag: v1.35.2-aks-candidate
+Official tag: v1.35.2-aks
 Expected fork-owned areas:
 - azure provider
 - config/dynamic

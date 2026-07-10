@@ -141,10 +141,11 @@ For each resolved conflict, expect:
 - the chosen resolution
 - why that resolution is correct for this release line
 - whether the resolution intentionally changes behavior
+- confirmation that the resolution was reviewed and approved by the requestor before it was applied
 
 Short notes such as `basic conflict resolution` are not enough by themselves.
 
-Fail if the PR required manual conflict resolution or adaptation and the rationale is undocumented.
+Fail if the PR required manual conflict resolution or adaptation and the rationale is undocumented or shows no evidence of requestor review.
 
 ### 7. Verify master-azure-Derived Commits
 
@@ -168,32 +169,34 @@ Fail if `master-azure` is used as a merge source or if the compatibility justifi
 
 The tag scheme is part of correctness.
 
-Initial release:
+Initial release (no revision number):
 
-- candidate tag: `vX.Y.Z-aks-1-candidate`
-- official tag: `vX.Y.Z-aks-1`
+- candidate tag: `vX.Y.Z-aks-candidate`
+- official tag: `vX.Y.Z-aks`
 
-Later revision release:
+Revision releases (starting at 2):
 
-- candidate tag: `vX.Y.Z-aks-N-candidate`
-- official tag: `vX.Y.Z-aks-N`
+- candidate tag: `vX.Y.Z-aks-2-candidate`, `vX.Y.Z-aks-3-candidate`, etc.
+- official tag: `vX.Y.Z-aks-2`, `vX.Y.Z-aks-3`, etc.
 
-The initial release starts at `N=1`, and each later respin increments `N`.
+Only respins on top of the same upstream patch version base carry a revision number. The initial release for a new branch has none.
+
+Tags must be applied **after the PR merges**, not to pre-merge PR head commits. The candidate tag goes on the merge commit on the release branch. The official tag goes on that same commit after the image build completes.
 
 Review checks:
 
-- the candidate tag name matches the version and release number
-- the candidate tag points at the PR commit being reviewed
+- the candidate tag name matches the version and whether this is an initial or revision release
+- the candidate tag points at the merge commit on the release branch, not a pre-merge head
 - the official tag is not used prematurely while the candidate is still under validation
 
 Useful commands:
 
 ```bash
-git tag --points-at <pr-head-sha>
+git tag --points-at <merge-sha>
 git rev-parse <candidate-tag>
 ```
 
-Fail if the candidate tag name is wrong, the tag points at the wrong commit, or the official tag has been applied before the release is finalized.
+Fail if the candidate tag name is wrong, the tag points at the wrong commit (e.g., a pre-merge head), or the official tag has been applied before the release is finalized.
 
 ### 9. Verify Validation Evidence
 
@@ -221,8 +224,8 @@ To make review faster, ask authors to include a short release manifest in the PR
 Release type: new patch version
 Target branch: cluster-autoscaler-release-1.35.2-aks
 Upstream tag: cluster-autoscaler-1.35.2
-Candidate tag: v1.35.2-aks-1-candidate
-Official tag: v1.35.2-aks-1
+Candidate tag: v1.35.2-aks-candidate
+Official tag: v1.35.2-aks
 Cherry-picks:
 - <sha> main AKS fork delta
 - <sha> follow-up fix

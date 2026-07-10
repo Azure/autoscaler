@@ -61,11 +61,16 @@ As of May 2026, that means you must verify whether `1.33` is still fully support
 ## Naming
 
 - Release branches: `cluster-autoscaler-release-x.y.z-aks`
-- Initial candidate tag: `vX.Y.Z-aks-1-candidate`
-- Initial official tag: `vX.Y.Z-aks-1`
-- Later revision candidate tag: `vX.Y.Z-aks-N-candidate`
+- Initial candidate tag: `vX.Y.Z-aks-candidate`
+- Initial official tag: `vX.Y.Z-aks`
+- First revision candidate tag: `vX.Y.Z-aks-2-candidate`
+- First revision official tag: `vX.Y.Z-aks-2`
+- Later revision candidate tag: `vX.Y.Z-aks-N-candidate` (incrementing N from 2)
 - Later revision official tag: `vX.Y.Z-aks-N`
-- The initial release for a branch starts at `N=1`, and each later respin increments `N`.
+
+The initial release for a branch carries no revision number. Only respins on top of the same upstream patch version base are numbered, starting at `2`.
+
+Tags are created **after the PR merges**, not before. Apply the candidate tag to the merge commit on the release branch, trigger the image build, then apply the official tag after the image is fully built.
 
 Keep the branch name tied to the upstream patch version base. If you need a small respin on top of the same upstream patch version, keep the branch name and use a new revision tag.
 
@@ -93,13 +98,25 @@ git switch -c <topic-branch> cluster-autoscaler-release-1.36.0-aks
 
 5. Cherry-pick the main AKS fork delta commit for that line on the working branch.
 6. Cherry-pick any additional approved AKS fork commits after the main fork delta commit on the working branch.
-7. If any cherry-pick needs manual conflict resolution, document every resolved conflict in the PR description or in the resolving commit, including the affected files and rationale.
+7. If any cherry-pick produces a conflict, **stop and present the conflict to the requestor** before resolving it. Show:
+   - the file and the two competing changes
+   - what each side is doing and why they conflict
+   - the available resolution options with a recommended option and rationale
+   Wait for the requestor to confirm the resolution before proceeding. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
 8. Evaluate whether any `master-azure`-only compatibility commits must also be applied on the working branch.
 9. Run validation on the working branch.
 10. Open a PR from the working branch into `cluster-autoscaler-release-1.36.0-aks`.
-11. Tag the PR commit with `v1.36.0-aks-1-candidate`.
+11. After the PR merges, apply the candidate tag to the merge commit on the release branch:
+    ```bash
+    git tag v1.36.0-aks-candidate <merge-sha>
+    git push origin v1.36.0-aks-candidate
+    ```
 12. Build an image from that candidate tag.
-13. After the PR lands and the image from that candidate tag is fully built, add the official tag `v1.36.0-aks-1`.
+13. After the image is fully built, add the official tag:
+    ```bash
+    git tag v1.36.0-aks <merge-sha>
+    git push origin v1.36.0-aks
+    ```
 
 Do not merge `master-azure` forward to create a new minor version release.
 
@@ -126,13 +143,25 @@ git switch -c <topic-branch> cluster-autoscaler-release-1.35.2-aks
    - main AKS fork delta commit
    - additional AKS fork commits already approved for that line
   - any new small AKS-only fixes approved for this patch version line
-5. If any cherry-pick needs manual conflict resolution, document every resolved conflict in the PR description or in the resolving commit, including the affected files and rationale.
+5. If any cherry-pick produces a conflict, **stop and present the conflict to the requestor** before resolving it. Show:
+   - the file and the two competing changes
+   - what each side is doing and why they conflict
+   - the available resolution options with a recommended option and rationale
+   Wait for the requestor to confirm the resolution before proceeding. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
 6. Re-evaluate `master-azure`-only candidates only if they are still needed and still compatible.
 7. Run validation on the working branch.
 8. Open a PR from the working branch into `cluster-autoscaler-release-1.35.2-aks`.
-9. Tag the PR commit with `v1.35.2-aks-1-candidate`.
+9. After the PR merges, apply the candidate tag to the merge commit on the release branch:
+    ```bash
+    git tag v1.35.2-aks-candidate <merge-sha>
+    git push origin v1.35.2-aks-candidate
+    ```
 10. Build an image from that candidate tag.
-11. After the PR lands and the image from that candidate tag is fully built, add the official tag `v1.35.2-aks-1`.
+11. After the image is fully built, add the official tag:
+    ```bash
+    git tag v1.35.2-aks <merge-sha>
+    git push origin v1.35.2-aks
+    ```
 
 Do not create a new patch version release by merging forward the previous AKS branch. Rebuild from the upstream tag for that patch version and replay the AKS stack.
 
@@ -154,12 +183,24 @@ git switch -c <topic-branch> cluster-autoscaler-release-1.35.0-aks
 git cherry-pick -x <sha>
 ```
 
-5. If the change needs manual conflict resolution or adaptation, document every resolved conflict in the PR description or in the resolving commit, including the affected files and rationale.
+5. If the cherry-pick produces a conflict, **stop and present the conflict to the requestor** before resolving it. Show:
+   - the file and the two competing changes
+   - what each side is doing and why they conflict
+   - the available resolution options with a recommended option and rationale
+   Wait for the requestor to confirm the resolution before proceeding. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
 6. Run validation on the working branch.
 7. Open a PR from the working branch into `cluster-autoscaler-release-1.35.0-aks`.
-8. Tag the PR commit with the next candidate tag, for example `v1.35.0-aks-2-candidate`.
+8. After the PR merges, apply the next candidate tag to the merge commit on the release branch (revisions start at `2`):
+    ```bash
+    git tag v1.35.0-aks-2-candidate <merge-sha>
+    git push origin v1.35.0-aks-2-candidate
+    ```
 9. Build an image from that candidate tag.
-10. After the PR lands and the image from that candidate tag is fully built, add the matching official tag, for example `v1.35.0-aks-2`.
+10. After the image is fully built, add the matching official tag:
+    ```bash
+    git tag v1.35.0-aks-2 <merge-sha>
+    git push origin v1.35.0-aks-2
+    ```
 
 Use a revision only for a small AKS-only respin on top of the same upstream patch version base. If the upstream patch version changes, make a new branch for that patch version instead.
 
@@ -167,34 +208,75 @@ Use a revision only for a small AKS-only respin on top of the same upstream patc
 
 `master-azure` is not a release source. It is only a place to discover Azure-only commits that may need to be backported into supported AKS release branches.
 
-Build the candidate list from the live branch state:
+### Finding Unbackported Fork Commits
+
+The reliable way to surface missing backports is to compare fork-specific commits on `master-azure` against fork-specific commits on each release branch.
+
+**Step 1 — Get fork-specific commits on `master-azure`:**
 
 ```bash
-git log --no-merges upstream/master..master-azure --oneline
+git log --no-merges upstream/master..origin/master-azure --oneline
 ```
 
-Then classify each commit:
+**Step 2 — Get fork-specific commits on the target release branch:**
+
+```bash
+# Replace the upstream tag and branch name for the target release line
+git log --no-merges cluster-autoscaler-1.33.4..origin/cluster-autoscaler-release-1.33.4-aks --oneline
+```
+
+**Step 3 — Identify what is missing.**
+
+Do not compare by SHA or by patch content. Cherry-picks to release branches often require conflict resolution, which changes the diff and makes patch-id matching unreliable. Instead, compare by commit subject, stripping trailing PR number references (e.g., `(#48)`, `(#61)`) before matching, since the same fix cherry-picked to a different branch gets a new PR number.
+
+Any commit subject that appears in the `master-azure` fork-specific list but has no clear subject match in the release branch fork-specific list is a candidate for backport review.
+
+**Note on non-squash-merged PRs:** If a PR was merged without squash, the individual commit messages on `master-azure` may be meaningless (e.g., "superseded operation", "adding comment"). When you encounter unrecognized subjects, trace them back to their merge commit on `master-azure` to understand what the PR was:
+
+```bash
+git log --merges --oneline --ancestry-path <sha>^..origin/master-azure | head -5
+```
+
+Or look up the merge commit directly:
+
+```bash
+git log --merges --oneline upstream/master..origin/master-azure
+```
+
+Then classify each unbackported commit:
 
 - release-noise or metadata-only
-- already present on the target AKS branch
+- already present on the target AKS branch under a different message
 - still needed and compatible with supported release branches
 - incompatible with older release branches and therefore skip or adapt
 
 Use the newest supported AKS branch first, then work backward only across still-supported branches.
 
-For each candidate commit:
+For each candidate commit or PR:
 
 1. Check whether it depends on other `master-azure`-only commits.
 2. Check whether it changes APIs, dependencies, or toolchains that differ across `1.33`, `1.34`, and `1.35`.
-3. Probe compatibility with a dry-run cherry-pick.
+3. If the PR was not squash-merged, prefer cherry-picking the merge commit with `-m 1` rather than individual commits, to avoid applying WIP-named commits to release branches:
+
+```bash
+git cherry-pick -x -m 1 <merge-commit-sha>
+```
+
+4. If the PR was squash-merged or has a single meaningful commit, cherry-pick that commit directly:
+
+```bash
+git cherry-pick -x <sha>
+```
+
+5. Probe compatibility with a dry-run cherry-pick before committing:
 
 ```bash
 git cherry-pick -x --no-commit <sha>
 ```
 
-4. If the cherry-pick does not apply cleanly or requires unsupported APIs on the target release line, abort and either adapt the change or skip it.
-5. If you adapt the change or resolve conflicts manually, document every resolved conflict in the PR description or in the resolving commit.
-6. Only backport the commit to branches that are still fully supported at execution time.
+6. If the cherry-pick does not apply cleanly or requires unsupported APIs on the target release line, abort and either adapt the change or skip it.
+7. If the cherry-pick produces a conflict, **stop and present the conflict to the requestor** before resolving it. Show the competing changes, the available resolution options, and a recommendation. Wait for confirmation before proceeding. Document the agreed resolution in the PR description or in the resolving commit.
+8. Only backport the commit to branches that are still fully supported at execution time.
 
 If `1.33` has already moved into LTS-only or platform support, do not add new fork commits to `1.33` even if similar commits are still being applied to `1.34` and `1.35`.
 
