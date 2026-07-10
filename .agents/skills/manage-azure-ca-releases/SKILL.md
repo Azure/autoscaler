@@ -204,6 +204,41 @@ git cherry-pick -x <sha>
 
 Use a revision only for a small AKS-only respin on top of the same upstream patch version base. If the upstream patch version changes, make a new branch for that patch version instead.
 
+## After Opening the PR
+
+After opening any release PR, add two standard comments:
+
+### Comment 1 — Reviewer guide
+
+Post a comment that gives reviewers the specific checklist for this PR. Include:
+
+- A link to the `verify-azure-ca-release` skill as the review framework
+- The support eligibility check and EOL date for the target minor version
+- The exact commands to verify the upstream base, PR commit set, and tag state
+- A summary of each resolved conflict with the competing changes and the approved resolution
+- The validation results from the PR description
+
+### Comment 2 — Next steps after merge
+
+Post a comment with the exact commands to run after the PR merges:
+
+1. Fetch the updated release branch and capture the merge SHA
+2. Apply the candidate tag to the merge commit and push it
+3. Trigger the image build from the candidate tag
+4. Apply the official tag after the image build confirms
+
+Use ready-to-run shell commands with the exact tag names for this release. For example:
+
+```bash
+git fetch origin cluster-autoscaler-release-1.35.2-aks
+MERGE_SHA=$(git rev-parse origin/cluster-autoscaler-release-1.35.2-aks)
+git tag v1.35.2-aks-candidate $MERGE_SHA
+git push origin v1.35.2-aks-candidate
+# after image build confirms:
+git tag v1.35.2-aks $MERGE_SHA
+git push origin v1.35.2-aks
+```
+
 ## Using master-azure Safely
 
 `master-azure` is not a release source. It is only a place to discover Azure-only commits that may need to be backported into supported AKS release branches.
