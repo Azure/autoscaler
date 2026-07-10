@@ -114,6 +114,17 @@ Check that:
 - the commit list matches the PR description
 - any non-obvious extra commit is explained
 
+After merge, verify the PR was merged using a regular merge commit (not squashed, not rebased):
+
+- individual cherry-picked commits must be visible on the release branch
+- a single merge commit for the PR must also be present on the release branch
+
+```bash
+git log --oneline origin/<release-branch> | head -10
+```
+
+Fail if the PR was squash-merged (individual commits collapsed into one) or rebase-merged (no merge commit present).
+
 Fail if the PR drags in unrelated commits, broad sync noise, or merge commits that hide provenance.
 
 ### 5. Verify Cherry-Pick Provenance
@@ -218,27 +229,38 @@ Fail if required validation was not run, if results are missing, or if failures 
 
 ## Reviewer-Friendly PR Structure
 
-To make review faster, ask authors to include a short release manifest in the PR body:
+To make review faster, ask authors to include a short release manifest in the PR body. All SHAs, PR references, and tags must be **hyperlinked** so reviewers can click through without manually searching:
+
+- Upstream tag → link to the kubernetes/autoscaler release page
+- Each cherry-pick → link both the working-branch commit and the source commit; include a PR link if the source came through a PR
+- Each conflict-causing upstream commit → link to the kubernetes/autoscaler commit
+- Source release branch → link to the branch tree
 
 ```text
 Release type: new patch version
 Target branch: cluster-autoscaler-release-1.35.2-aks
-Upstream tag: cluster-autoscaler-1.35.2
-Candidate tag: v1.35.2-aks-candidate
-Official tag: v1.35.2-aks
+Upstream tag: [cluster-autoscaler-1.35.2](https://github.com/kubernetes/autoscaler/releases/tag/cluster-autoscaler-1.35.2)
+Candidate tag: v1.35.2-aks-candidate (applied post-merge)
+Official tag: v1.35.2-aks (applied after image build)
+
 Cherry-picks:
-- <sha> main AKS fork delta
-- <sha> follow-up fix
+| Working branch commit | Source commit | Message |
+|---|---|---|
+| [<short-sha>](<Azure/autoscaler commit URL>) | [<short-sha>](<Azure/autoscaler commit URL>) (PR [#N](<PR URL>)) | <message> |
+
 Resolved conflicts:
-- none
+- `<file>`: upstream [<short-sha>](<kubernetes/autoscaler commit URL>) added X; fork added Y;
+  resolution (requestor approved): <chosen resolution and rationale>
+
 master-azure-derived commits:
-- none
+- none (or link each commit)
+
 Validation:
-- hack/verify-all.sh -v
-- Azure go test command
+- hack/verify-all.sh -v: ✅
+- Azure go test command: ✅
 ```
 
-If this manifest is missing, recommend adding it before full review.
+If this manifest is missing or links are absent, recommend adding them before full review.
 
 ## Review Output
 

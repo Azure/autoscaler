@@ -21,6 +21,7 @@ description: 'Manage Azure Cluster Autoscaler fork releases - new minor versions
 - Do not cut releases from `master-azure`.
 - `master-azure` is only a source of candidate Azure-only commits that may need to be backported.
 - Any resolved conflicts must be documented in the PR description or in the commit that resolved them.
+- Merge release PRs using a **regular merge commit** (GitHub "Create a merge commit"). Do not squash-merge or rebase-merge. Individual commits must remain visible on the release branch so that cherry-pick provenance is preserved, and the PR itself must be represented by a single merge commit as a traceable unit.
 - Only fully supported AKS minor versions receive new fork releases or new fork commits.
 - If a minor version is now in AKS LTS-only support, AKS platform support (`N-3`), or is otherwise outside the fully supported GA window, stop and do not create a new minor version, patch version, or revision release for it.
 
