@@ -103,7 +103,7 @@ git switch -c <topic-branch> cluster-autoscaler-release-1.36.0-aks
    - the file and the two competing changes
    - what each side is doing and why they conflict
    - the available resolution options with a recommended option and rationale
-   Wait for the requestor to confirm the resolution before proceeding. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
+   Wait for the requestor to confirm the resolution before proceeding. When applying the agreed resolution, **always replace the entire conflict block in a single operation** — from the `<<<<<<< HEAD` line through the `>>>>>>> <sha>` line inclusive. Never replace only the opening or closing marker alone; partial replacements leave orphaned content that compiles incorrectly. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
 8. Evaluate whether any `master-azure`-only compatibility commits must also be applied on the working branch.
 9. Run validation on the working branch.
 10. Open a PR from the working branch into `cluster-autoscaler-release-1.36.0-aks`.
@@ -148,7 +148,7 @@ git switch -c <topic-branch> cluster-autoscaler-release-1.35.2-aks
    - the file and the two competing changes
    - what each side is doing and why they conflict
    - the available resolution options with a recommended option and rationale
-   Wait for the requestor to confirm the resolution before proceeding. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
+   Wait for the requestor to confirm the resolution before proceeding. When applying the agreed resolution, **always replace the entire conflict block in a single operation** — from the `<<<<<<< HEAD` line through the `>>>>>>> <sha>` line inclusive. Never replace only the opening or closing marker alone; partial replacements leave orphaned content that compiles incorrectly. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
 6. Re-evaluate `master-azure`-only candidates only if they are still needed and still compatible.
 7. Run validation on the working branch.
 8. Open a PR from the working branch into `cluster-autoscaler-release-1.35.2-aks`.
@@ -188,7 +188,7 @@ git cherry-pick -x <sha>
    - the file and the two competing changes
    - what each side is doing and why they conflict
    - the available resolution options with a recommended option and rationale
-   Wait for the requestor to confirm the resolution before proceeding. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
+   Wait for the requestor to confirm the resolution before proceeding. When applying the agreed resolution, **always replace the entire conflict block in a single operation** — from the `<<<<<<< HEAD` line through the `>>>>>>> <sha>` line inclusive. Never replace only the opening or closing marker alone; partial replacements leave orphaned content that compiles incorrectly. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
 6. Run validation on the working branch.
 7. Open a PR from the working branch into `cluster-autoscaler-release-1.35.0-aks`.
 8. After the PR merges, apply the next candidate tag to the merge commit on the release branch (revisions start at `2`):
@@ -311,7 +311,7 @@ git cherry-pick -x --no-commit <sha>
 ```
 
 6. If the cherry-pick does not apply cleanly or requires unsupported APIs on the target release line, abort and either adapt the change or skip it.
-7. If the cherry-pick produces a conflict, **stop and present the conflict to the requestor** before resolving it. Show the competing changes, the available resolution options, and a recommendation. Wait for confirmation before proceeding. Document the agreed resolution in the PR description or in the resolving commit.
+7. If the cherry-pick produces a conflict, **stop and present the conflict to the requestor** before resolving it. Show the competing changes, the available resolution options, and a recommendation. Wait for confirmation before proceeding. When applying the agreed resolution, **always replace the entire conflict block in a single operation** — from the `<<<<<<< HEAD` line through the `>>>>>>> <sha>` line inclusive. Never replace only the opening or closing marker alone; partial replacements leave orphaned content that compiles incorrectly. Document the agreed resolution in the PR description or in the resolving commit.
 8. Only backport the commit to branches that are still fully supported at execution time.
 
 If `1.33` has already moved into LTS-only or platform support, do not add new fork commits to `1.33` even if similar commits are still being applied to `1.34` and `1.35`.
