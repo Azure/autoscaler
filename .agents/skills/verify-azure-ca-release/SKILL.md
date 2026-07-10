@@ -114,16 +114,17 @@ Check that:
 - the commit list matches the PR description
 - any non-obvious extra commit is explained
 
-After merge, verify the PR was merged using a regular merge commit (not squashed, not rebased):
+After merge, verify the PR was merged using squash-merge:
 
-- individual cherry-picked commits must be visible on the release branch
-- a single merge commit for the PR must also be present on the release branch
+- each PR must land as exactly one commit on the release branch
+- there must be no separate merge commit for the PR
+- the single commit message should match the PR title
 
 ```bash
 git log --oneline origin/<release-branch> | head -10
 ```
 
-Fail if the PR was squash-merged (individual commits collapsed into one) or rebase-merged (no merge commit present).
+Fail if the PR was merged with a regular merge commit (individual commits plus a separate merge commit visible) or rebased (no clean single commit per PR).
 
 Fail if the PR drags in unrelated commits, broad sync noise, or merge commits that hide provenance.
 

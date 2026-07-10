@@ -21,7 +21,7 @@ description: 'Manage Azure Cluster Autoscaler fork releases - new minor versions
 - Do not cut releases from `master-azure`.
 - `master-azure` is only a source of candidate Azure-only commits that may need to be backported.
 - Any resolved conflicts must be documented in the PR description or in the commit that resolved them.
-- Merge release PRs using a **regular merge commit** (GitHub "Create a merge commit"). Do not squash-merge or rebase-merge. Individual commits must remain visible on the release branch so that cherry-pick provenance is preserved, and the PR itself must be represented by a single merge commit as a traceable unit.
+- Merge release PRs using **squash-merge** (GitHub "Squash and merge"). Do not use a regular merge commit or rebase-merge. Each PR must land as exactly one clean commit on the release branch, making the stack easy to audit and replay onto the next patch version.
 - Only fully supported AKS minor versions receive new fork releases or new fork commits.
 - If a minor version is now in AKS LTS-only support, AKS platform support (`N-3`), or is otherwise outside the fully supported GA window, stop and do not create a new minor version, patch version, or revision release for it.
 
@@ -292,13 +292,13 @@ For each candidate commit or PR:
 
 1. Check whether it depends on other `master-azure`-only commits.
 2. Check whether it changes APIs, dependencies, or toolchains that differ across `1.33`, `1.34`, and `1.35`.
-3. If the PR was not squash-merged, prefer cherry-picking the merge commit with `-m 1` rather than individual commits, to avoid applying WIP-named commits to release branches:
+3. If the PR on `master-azure` was not squash-merged, the individual commit messages may be meaningless. Cherry-pick the squash commit from the release branch instead (if already backported), or cherry-pick the merge commit with `-m 1` as a one-time landing:
 
 ```bash
 git cherry-pick -x -m 1 <merge-commit-sha>
 ```
 
-4. If the PR was squash-merged or has a single meaningful commit, cherry-pick that commit directly:
+4. If the PR was squash-merged, cherry-pick that single squash commit directly:
 
 ```bash
 git cherry-pick -x <sha>
