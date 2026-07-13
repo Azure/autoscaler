@@ -69,7 +69,7 @@ As of May 2026, that means you must verify whether `1.33` is still fully support
 - Later revision candidate tag: `vX.Y.Z-aks-N-candidate` (incrementing N from 1)
 - Later revision official tag: `vX.Y.Z-aks-N`
 
-The initial release for a branch carries no revision number. Only respins on top of the same upstream patch version base are numbered, starting at `2`.
+The initial release for a branch carries no revision number. Only respins on top of the same upstream patch version base are numbered, starting at `1`.
 
 Tags are created **after the PR merges**, not before. Apply the candidate tag to the merge commit on the release branch, trigger the image build, then apply the official tag after the image is fully built.
 
