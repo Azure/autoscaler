@@ -188,8 +188,8 @@ Initial release (no revision number):
 
 Revision releases (starting at 2):
 
-- candidate tag: `vX.Y.Z-aks-2-candidate`, `vX.Y.Z-aks-3-candidate`, etc.
-- official tag: `vX.Y.Z-aks-2`, `vX.Y.Z-aks-3`, etc.
+- candidate tag: `vX.Y.Z-aks-1-candidate`, `vX.Y.Z-aks-2-candidate`, etc.
+- official tag: `vX.Y.Z-aks-1`, `vX.Y.Z-aks-2`, etc.
 
 Only respins on top of the same upstream patch version base carry a revision number. The initial release for a new branch has none.
 

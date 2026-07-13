@@ -64,9 +64,9 @@ As of May 2026, that means you must verify whether `1.33` is still fully support
 - Release branches: `cluster-autoscaler-release-x.y.z-aks`
 - Initial candidate tag: `vX.Y.Z-aks-candidate`
 - Initial official tag: `vX.Y.Z-aks`
-- First revision candidate tag: `vX.Y.Z-aks-2-candidate`
-- First revision official tag: `vX.Y.Z-aks-2`
-- Later revision candidate tag: `vX.Y.Z-aks-N-candidate` (incrementing N from 2)
+- First revision candidate tag: `vX.Y.Z-aks-1-candidate`
+- First revision official tag: `vX.Y.Z-aks-1`
+- Later revision candidate tag: `vX.Y.Z-aks-N-candidate` (incrementing N from 1)
 - Later revision official tag: `vX.Y.Z-aks-N`
 
 The initial release for a branch carries no revision number. Only respins on top of the same upstream patch version base are numbered, starting at `2`.
@@ -191,16 +191,16 @@ git cherry-pick -x <sha>
    Wait for the requestor to confirm the resolution before proceeding. When applying the agreed resolution, **always replace the entire conflict block in a single operation** — from the `<<<<<<< HEAD` line through the `>>>>>>> <sha>` line inclusive. Never replace only the opening or closing marker alone; partial replacements leave orphaned content that compiles incorrectly. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
 6. Run validation on the working branch.
 7. Open a PR from the working branch into `cluster-autoscaler-release-1.35.0-aks`.
-8. After the PR merges, apply the next candidate tag to the merge commit on the release branch (revisions start at `2`):
+8. After the PR merges, apply the next candidate tag to the merge commit on the release branch (revisions start at `1`):
     ```bash
-    git tag v1.35.0-aks-2-candidate <merge-sha>
-    git push origin v1.35.0-aks-2-candidate
+    git tag v1.35.0-aks-1-candidate <merge-sha>
+    git push origin v1.35.0-aks-1-candidate
     ```
 9. Build an image from that candidate tag.
 10. After the image is fully built, add the matching official tag:
     ```bash
-    git tag v1.35.0-aks-2 <merge-sha>
-    git push origin v1.35.0-aks-2
+    git tag v1.35.0-aks-1 <merge-sha>
+    git push origin v1.35.0-aks-1
     ```
 
 Use a revision only for a small AKS-only respin on top of the same upstream patch version base. If the upstream patch version changes, make a new branch for that patch version instead.
