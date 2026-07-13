@@ -1,5 +1,5 @@
 ---
-name: create-azure-ca-release-draft
+name: create-azure-release-draft
 description: 'Create a draft GitHub release on Azure/autoscaler after an AKS release PR merges and the official tag is applied. Use when: creating the draft release notes for a new AKS patch version, new minor version, or revision; generating the body from the upstream diff and AKS cherry-pick list; publishing the draft to GitHub for review before it goes live.'
 ---
 
