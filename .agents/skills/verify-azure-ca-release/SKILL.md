@@ -186,7 +186,7 @@ Initial release (no revision number):
 - candidate tag: `vX.Y.Z-aks-candidate`
 - official tag: `vX.Y.Z-aks`
 
-Revision releases (starting at 2):
+Revision releases (starting at 1):
 
 - candidate tag: `vX.Y.Z-aks-1-candidate`, `vX.Y.Z-aks-2-candidate`, etc.
 - official tag: `vX.Y.Z-aks-1`, `vX.Y.Z-aks-2`, etc.
