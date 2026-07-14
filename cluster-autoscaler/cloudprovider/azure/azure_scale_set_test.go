@@ -2188,6 +2188,70 @@ func TestScaleSetETagRetrySkippedWhenAlreadyAtTarget(t *testing.T) {
 	assert.Equal(t, 1, putCalls, "expected no second PUT when VMSS already at target")
 }
 
+// TestScaleSetETagRetryInvalidatesInstanceCache verifies that after an ETag precondition
+// refresh, the instance cache is invalidated so a stale deallocated/deallocating count is
+// not reused. In deallocate mode getScaleSetSize subtracts the deallocated instance count
+// (read from the instance cache) from the reported capacity; if a concurrent writer removed
+// instances out-of-band (the case ETag guards), the refreshed VMSS carries fresh capacity
+// but the instance cache would still hold the pre-change count, yielding an incorrect
+// (potentially negative) target size. The refresh must therefore mark the instance cache
+// stale so it is recomputed from fresh Azure state.
+func TestScaleSetETagRetryInvalidatesInstanceCache(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	manager := newTestAzureManager(t)
+	manager.config.EnableVMSSEtag = true
+
+	vmssName := "vmss-etag-dealloc-invalidate"
+	orchMode := armcompute.OrchestrationModeUniform
+
+	// CA's cached view: stale ETag, capacity 3.
+	manager.azureCache.setScaleSet(vmssName, &armcompute.VirtualMachineScaleSet{
+		Name:       ptr.To(vmssName),
+		SKU:        &armcompute.SKU{Capacity: ptr.To[int64](3)},
+		Properties: &armcompute.VirtualMachineScaleSetProperties{OrchestrationMode: &orchMode},
+		Etag:       ptr.To(`W/"stale"`),
+	})
+
+	// The refresh GET returns a fresh VMSS already at/above the desired target so the retry
+	// takes the skip path (GET only, no second PUT). The cache invalidation runs regardless.
+	mockVMSSClient := mock_virtualmachinescalesetclient.NewMockInterface(ctrl)
+	mockVMSSClient.EXPECT().Get(gomock.Any(), manager.config.ResourceGroup, vmssName, gomock.Any()).
+		Return(&armcompute.VirtualMachineScaleSet{
+			Name:       ptr.To(vmssName),
+			SKU:        &armcompute.SKU{Capacity: ptr.To[int64](5)},
+			Properties: &armcompute.VirtualMachineScaleSetProperties{OrchestrationMode: &orchMode},
+			Etag:       ptr.To(`W/"fresh"`),
+		}, nil).Times(1)
+	mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).
+		Return([]*armcompute.VirtualMachineScaleSet{}, nil).AnyTimes()
+	manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+	scaleSet := newTestScaleSetDeallocateMode(manager, vmssName)
+	scaleSet.instancesRefreshPeriod = 10 * time.Minute
+	// Mark the instance cache as freshly refreshed so we can observe the invalidation.
+	scaleSet.lastInstanceRefresh = time.Now()
+	assert.True(t, scaleSet.lastInstanceRefresh.Add(scaleSet.instancesRefreshPeriod).After(time.Now()),
+		"precondition: instance cache should start valid")
+
+	ctx, cancel := getContextWithTimeout(asyncContextTimeout)
+	defer cancel()
+
+	fresh, poller, err := scaleSet.retryCreateOrUpdateWithFreshETag(ctx, 4)
+	assert.NoError(t, err)
+	assert.Nil(t, poller, "already-at-target refresh should skip the retry PUT")
+	if assert.NotNil(t, fresh) && assert.NotNil(t, fresh.SKU) && assert.NotNil(t, fresh.SKU.Capacity) {
+		assert.Equal(t, int64(5), *fresh.SKU.Capacity)
+	}
+
+	// The instance cache must now be considered stale, forcing a fresh recompute of the
+	// deallocated/deallocating count on the next getScaleSetSize.
+	assert.False(t, scaleSet.lastInstanceRefresh.Add(scaleSet.instancesRefreshPeriod).After(time.Now()),
+		"ETag refresh should invalidate the instance cache")
+}
+
 // TestScaleSetETagReconcilesConcurrentWriter exercises the core scenario ETag mode is
 // meant to protect: another writer mutates the VMSS between CA's read and its write.
 // Using a mock that enforces optimistic concurrency like the real API, CA's first PUT
