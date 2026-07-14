@@ -23,8 +23,10 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
+	"github.com/Azure/go-autorest/autorest/to"
 
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 )
@@ -197,6 +199,43 @@ func (scaleSet *ScaleSet) setInstanceStatusByProviderID(providerID string, statu
 	}
 }
 
+// setInstanceStatusIfNotSuperseded sets the status for an instance only if a newer concurrent
+// operation has not already transitioned it to a different state. This prevents async completion
+// goroutines (e.g., waitForDeallocateInstances) from blindly overwriting cache state that was
+// set by a more recent operation (e.g., startInstance).
+//
+// supersedingStates lists the states that indicate a newer operation has taken over — if the
+// instance is currently in any of these states, the update is skipped.
+func (scaleSet *ScaleSet) setInstanceStatusIfNotSuperseded(providerID string, status cloudprovider.InstanceStatus, supersedingStates []cloudprovider.InstanceState) {
+	scaleSet.instanceMutex.Lock()
+	defer scaleSet.instanceMutex.Unlock()
+
+	err := scaleSet.validateInstanceCacheWithoutLock()
+	if err != nil {
+		klog.Errorf("setInstanceStatusIfNotSuperseded: error validating instanceCache for providerID %s for "+
+			"scaleSet: %s, err: %v", providerID, scaleSet.Name, err)
+	}
+
+	for k, instance := range scaleSet.instanceCache {
+		if instance.Id == providerID {
+			if instance.Status != nil {
+				for _, s := range supersedingStates {
+					if instance.Status.State == s {
+						klog.V(3).Infof("setInstanceStatusIfNotSuperseded: skipping state update for %s "+
+							"in scaleSet %s: current state %v was set by a newer operation (target was %v)",
+							providerID, scaleSet.Name, instance.Status.State, status.State)
+						return
+					}
+				}
+			}
+			klog.V(3).Infof("setInstanceStatusIfNotSuperseded: setting instance state for %s for scaleSet "+
+				"%s to %d", instance.Id, scaleSet.Name, status.State)
+			scaleSet.instanceCache[k].Status = &status
+			break
+		}
+	}
+}
+
 // instanceStatusFromVM converts the VM provisioning state to cloudprovider.InstanceStatus.
 // Suggestion: reunify this with instanceStatusFromProvisioningStateAndPowerState() in azure_scale_set.go
 func (scaleSet *ScaleSet) instanceStatusFromVM(vm *compute.VirtualMachineScaleSetVM) *cloudprovider.InstanceStatus {
@@ -227,15 +266,29 @@ func (scaleSet *ScaleSet) instanceStatusFromVM(vm *compute.VirtualMachineScaleSe
 	case string(compute.GalleryProvisioningStateFailed):
 		status.State = cloudprovider.InstanceRunning
 
-		klog.V(3).Infof("VM %s reports failed provisioning state with power state: %s, eligible for fast delete: %s", ptr.Deref(vm.ID, ""), powerState, strconv.FormatBool(scaleSet.enableFastDeleteOnFailedProvisioning))
-		if scaleSet.enableFastDeleteOnFailedProvisioning {
+		klog.V(3).Infof("VM %s reports failed provisioning state with power state: %s, scale down mode: %s, eligible for fast delete: %s", to.String(vm.ID), powerState, scaleSet.scaleDownPolicy, strconv.FormatBool(scaleSet.enableFastDeleteOnFailedProvisioning))
+		if scaleSet.scaleDownPolicy == deallocate.Deallocate {
+			// Deallocate mode: detect failed-to-start VMs.
+			if !isRunningVmPowerState(powerState) {
+				// VM failed to start — remains deallocated or stopped.
+				// Signal as creation error to trigger backoff via handleInstanceCreationErrors.
+				// Failed VMs will be cleaned up by deleteCreatedNodesWithErrors, which for
+				// deallocate mode calls ForceDeleteNodes → deallocateInstances (returning
+				// the VM to a clean deallocated state for the next scale-up after backoff).
+				status.State = cloudprovider.InstanceCreating
+				status.ErrorInfo = &cloudprovider.InstanceErrorInfo{
+					ErrorClass:   cloudprovider.OutOfResourcesErrorClass,
+					ErrorCode:    "start-deallocated-failed",
+					ErrorMessage: "Failed to start deallocated VM",
+				}
+			}
+			// Running power state: InstanceRunning (default, already set above).
+		} else if scaleSet.enableFastDeleteOnFailedProvisioning {
 			// Provisioning can fail both during instance creation or after the instance is running.
 			// Per https://learn.microsoft.com/en-us/azure/virtual-machines/states-billing#provisioning-states,
 			// ProvisioningState represents the most recent provisioning state, therefore only report
 			// InstanceCreating errors when the power state indicates the instance has not yet started running
 			if !isRunningVmPowerState(powerState) {
-				// This fast deletion relies on the fact that InstanceCreating + ErrorInfo will subsequently trigger a deletion.
-				// Could be revisited to rely on something more stable/explicit.
 				status.State = cloudprovider.InstanceCreating
 				status.ErrorInfo = &cloudprovider.InstanceErrorInfo{
 					ErrorClass:   cloudprovider.OutOfResourcesErrorClass,
@@ -253,7 +306,7 @@ func (scaleSet *ScaleSet) instanceStatusFromVM(vm *compute.VirtualMachineScaleSe
 	// Add vmssCSE Provisioning Failed Message in error info body for vmssCSE Extensions if enableDetailedCSEMessage is true
 	if scaleSet.enableDetailedCSEMessage && vm.InstanceView != nil {
 		if err, failed := scaleSet.cseErrors(vm.InstanceView.Extensions); failed {
-			klog.V(3).Infof("VM %s reports CSE failure: %v, with provisioning state %s, power state %s", ptr.Deref(vm.ID, ""), err, ptr.Deref(vm.ProvisioningState, ""), powerState)
+			klog.V(3).Infof("VM %s reports CSE failure: %v, with provisioning state %s, power state %s, scale down mode: %s", to.String(vm.ID), err, to.String(vm.ProvisioningState), powerState, scaleSet.scaleDownPolicy)
 			status.State = cloudprovider.InstanceCreating
 			errorInfo := &cloudprovider.InstanceErrorInfo{
 				ErrorClass:   cloudprovider.OtherErrorClass,
@@ -264,5 +317,23 @@ func (scaleSet *ScaleSet) instanceStatusFromVM(vm *compute.VirtualMachineScaleSe
 		}
 	}
 
+	// now check power state
+	if vm.InstanceView != nil && vm.InstanceView.Statuses != nil {
+		statuses := *vm.InstanceView.Statuses
+
+		for _, s := range statuses {
+			state := to.String(s.Code)
+			// set the state to deallocated/deallocating based on their running state if provisioning is succeeded.
+			// This is to avoid the weird states with Failed VMs which can fail all API calls.
+			// This information is used to build instanceCache in CA.
+			if *vm.ProvisioningState == string(compute.GalleryProvisioningStateSucceeded) {
+				if powerStateDeallocated(state) {
+					status.State = cloudprovider.InstanceDeallocated
+				} else if powerStateDeallocating(state) {
+					status.State = cloudprovider.InstanceDeallocating
+				}
+			}
+		}
+	}
 	return status
 }

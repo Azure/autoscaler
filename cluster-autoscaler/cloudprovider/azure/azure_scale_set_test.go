@@ -32,6 +32,7 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmclient/mockvmclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssclient/mockvmssclient"
@@ -1961,4 +1962,87 @@ func TestWaitForDeleteInstancesRetryFailure(t *testing.T) {
 	// non-strict failure path.
 	assert.False(t, scaleSet.lastInstanceRefresh.IsZero(),
 		"expected instance cache to be invalidated after retry failure")
+}
+
+// TestForceDeleteNodesDeallocateMode verifies that ForceDeleteNodes routes to
+// deallocateInstances (DeallocateInstancesAsync) for deallocate-mode groups, and to
+// DeleteInstances (DeleteInstancesAsync) for delete-mode groups.
+func TestForceDeleteNodesDeallocateMode(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	vmssName := testASG
+	var vmssCapacity int64 = 3
+
+	testCases := []struct {
+		name             string
+		scaleDownPolicy  deallocate.ScaleDownPolicy
+		expectDeallocate bool
+		expectDelete     bool
+	}{
+		{
+			name:             "deallocate mode routes to deallocateInstances",
+			scaleDownPolicy:  deallocate.Deallocate,
+			expectDeallocate: true,
+			expectDelete:     false,
+		},
+		{
+			name:             "delete mode routes to deleteInstances",
+			scaleDownPolicy:  deallocate.Delete,
+			expectDeallocate: false,
+			expectDelete:     true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := newTestAzureManager(t)
+			expectedVMSSVMs := newTestVMSSVMList(3)
+			expectedVMs := newTestVMList(3)
+
+			expectedScaleSets := newTestVMSSList(vmssCapacity, vmssName, testLocation, compute.Uniform)
+
+			mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
+			mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).Times(1)
+
+			if tc.expectDeallocate {
+				mockVMSSClient.EXPECT().DeallocateInstancesAsync(gomock.Any(), manager.config.ResourceGroup, gomock.Any(), gomock.Any()).Return(nil, nil).Times(1)
+				mockVMSSClient.EXPECT().WaitForDeallocateInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
+			}
+			if tc.expectDelete {
+				mockVMSSClient.EXPECT().DeleteInstancesAsync(gomock.Any(), manager.config.ResourceGroup, gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).Times(1)
+				mockVMSSClient.EXPECT().WaitForDeleteInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).Return(&http.Response{StatusCode: http.StatusOK}, nil).AnyTimes()
+			}
+			manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+			mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+			mockVMSSVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup, vmssName, gomock.Any()).Return(expectedVMSSVMs, nil).AnyTimes()
+			manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+			mockVMClient := mockvmclient.NewMockInterface(ctrl)
+			mockVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedVMs, nil).AnyTimes()
+			manager.azClient.virtualMachinesClient = mockVMClient
+
+			resourceLimiter := cloudprovider.NewResourceLimiter(
+				map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
+				map[string]int64{cloudprovider.ResourceNameCores: 10, cloudprovider.ResourceNameMemory: 100000000})
+			_, err := BuildAzureCloudProvider(manager, resourceLimiter)
+			assert.NoError(t, err)
+
+			scaleSet := newTestScaleSet(manager, vmssName)
+			scaleSet.scaleDownPolicy = tc.scaleDownPolicy
+			registered := manager.RegisterNodeGroup(scaleSet)
+			manager.explicitlyConfigured[vmssName] = true
+			assert.True(t, registered)
+
+			err = manager.forceRefresh()
+			assert.NoError(t, err)
+
+			nodesToDelete := []*apiv1.Node{
+				newApiNode(compute.Uniform, 0),
+			}
+			err = scaleSet.ForceDeleteNodes(nodesToDelete)
+			assert.NoError(t, err)
+		})
+	}
 }
