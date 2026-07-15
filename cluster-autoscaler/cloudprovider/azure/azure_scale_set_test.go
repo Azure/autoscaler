@@ -658,6 +658,50 @@ func TestScaleSetAtomicIncreaseSizePollerFailure(t *testing.T) {
 	assert.Equal(t, 3, targetSize)
 }
 
+func TestScaleSetAtomicIncreaseSizeDeallocateNotImplemented(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	expectedScaleSets := newTestVMSSList(3, testASG, "eastus", compute.Uniform)
+	expectedVMSSVMs := newTestVMSSVMList(3)
+
+	provider := newTestProvider(t)
+
+	mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
+	mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
+	// No CreateOrUpdateAsync call should be made for deallocate policy.
+	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+	mockVMClient := mockvmclient.NewMockInterface(ctrl)
+	mockVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return([]compute.VirtualMachine{}, nil).AnyTimes()
+	provider.azureManager.azClient.virtualMachinesClient = mockVMClient
+
+	mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
+	mockVMSSVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup, testASG, string(compute.InstanceViewTypesInstanceView)).Return(expectedVMSSVMs, nil).AnyTimes()
+	provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+	err := provider.azureManager.forceRefresh()
+	assert.NoError(t, err)
+
+	ss := &ScaleSet{
+		azureRef:        azureRef{Name: testASG},
+		manager:         provider.azureManager,
+		minSize:         1,
+		maxSize:         5,
+		scaleDownPolicy: deallocate.Deallocate,
+	}
+	registered := provider.azureManager.RegisterNodeGroup(ss)
+	assert.True(t, registered)
+
+	err = provider.NodeGroups()[0].AtomicIncreaseSize(2)
+	assert.Equal(t, cloudprovider.ErrNotImplemented, err)
+
+	// Target size should remain unchanged (3).
+	targetSize, err := provider.NodeGroups()[0].TargetSize()
+	assert.NoError(t, err)
+	assert.Equal(t, 3, targetSize)
+}
+
 // TestIncreaseSizeOnVMProvisioningFailed has been tweeked only for Uniform Orchestration mode.
 // If ProvisioningState == failed and power state is not running, Status.State == InstanceCreating with errorInfo populated.
 func TestScaleSetIncreaseSizeOnVMProvisioningFailed(t *testing.T) {
