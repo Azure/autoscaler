@@ -285,9 +285,14 @@ func (scaleSet *ScaleSet) getCurSize() (int64, *GetVMSSFailedError) {
 func (scaleSet *ScaleSet) getScaleSetSize() (int64, error) {
 	// First, get the current size of the ScaleSet
 	size, getVMSSError := scaleSet.getCurSize()
-	if size == -1 || getVMSSError != nil {
-		klog.V(3).Infof("getScaleSetSize: either size is -1 (actual: %d) or error exists (actual err:%v)", size, getVMSSError.error)
+	if getVMSSError != nil {
+		klog.V(3).Infof("getScaleSetSize: error exists (actual err:%v)", getVMSSError.error)
 		return size, getVMSSError.error
+	}
+	if size == -1 {
+		err := fmt.Errorf("failed to get scale set size for %s: cached size is -1 without provider error", scaleSet.Name)
+		klog.V(3).Infof("getScaleSetSize: size is -1 (actual err:%v)", err)
+		return size, err
 	}
 	// If the policy for this ScaleSet is Deallocate, the TargetSize is the capacity reported by VMSS minus the nodes in deallocated and deallocating states
 	if scaleSet.scaleDownPolicy == deallocate.Deallocate {
@@ -298,6 +303,16 @@ func (scaleSet *ScaleSet) getScaleSetSize() (int64, error) {
 			return -1, err
 		}
 		size -= int64(totalDeallocationInstances)
+		if size < 0 {
+			// A negative deallocate-adjusted size means the deallocated/deallocating count
+			// exceeds the reported capacity, which is only possible when the caches are
+			// inconsistent (e.g. instances removed out-of-band). Surface it as an error
+			// rather than publishing a negative target, mirroring the size == -1 guard above.
+			err := fmt.Errorf("failed to get scale set size for %s: capacity minus %d deallocated/deallocating instances is negative (%d); instance cache likely stale",
+				scaleSet.Name, totalDeallocationInstances, size)
+			klog.V(3).Infof("getScaleSetSize: negative deallocate-adjusted size (actual err:%v)", err)
+			return -1, err
+		}
 		klog.V(3).Infof("Found: %d instances in deallocated state, returning target size: %d for scaleSet %s",
 			totalDeallocationInstances, size, scaleSet.Name)
 	}
@@ -646,6 +661,14 @@ func (scaleSet *ScaleSet) retryCreateOrUpdateWithFreshETag(ctx context.Context, 
 
 	// Persist the freshly-fetched VMSS (ETag and capacity) for subsequent operations.
 	scaleSet.manager.azureCache.setScaleSet(scaleSet.Name, fresh)
+
+	// The refreshed VMSS reflects the concurrent writer's change (for example, instances
+	// removed by an out-of-band delete while in deallocate mode). Invalidate the instance
+	// cache so the deallocated/deallocating count consumed by getScaleSetSize is recomputed
+	// from fresh Azure state; otherwise a stale count could be subtracted from the fresh
+	// capacity and yield an incorrect (potentially negative) target size. Callers of this
+	// method hold sizeMutex; invalidateInstanceCache guards the instance cache separately.
+	scaleSet.invalidateInstanceCache()
 
 	// If another writer already grew the VMSS to at least our target, the desired floor
 	// is already met; don't issue a PUT that would shrink it back down. Return the fresh
@@ -1018,13 +1041,21 @@ func (scaleSet *ScaleSet) DeleteInstances(instances []*azureRef, hasUnregistered
 
 	if !scaleSet.manager.config.StrictCacheUpdates {
 		// Proactively decrement scale set size so that we don't
-		// go below minimum node count if cache data is stale
-		// only do it for non-unregistered nodes
+		// go below minimum node count if cache data is stale.
+		// If the cached size can't represent the delete batch,
+		// mark it stale instead of publishing a negative size.
+		// Only do it for non-unregistered nodes.
 
 		if !hasUnregisteredNodes {
+			deleteCount := int64(len(instanceIDs))
 			scaleSet.sizeMutex.Lock()
-			scaleSet.curSize -= int64(len(instanceIDs))
-			scaleSet.lastSizeRefresh = time.Now()
+			if scaleSet.curSize < deleteCount {
+				klog.Warningf("VMSS: %s, cached size %d is smaller than instances to delete %d, invalidating size cache instead of decrementing", scaleSet.Name, scaleSet.curSize, deleteCount)
+				scaleSet.lastSizeRefresh = time.Time{}
+			} else {
+				scaleSet.curSize -= deleteCount
+				scaleSet.lastSizeRefresh = time.Now()
+			}
 			scaleSet.sizeMutex.Unlock()
 		}
 
@@ -1056,9 +1087,8 @@ func (scaleSet *ScaleSet) waitForDeleteInstances(poller *runtime.Poller[armcompu
 		}
 		return
 	}
-	if !scaleSet.manager.config.StrictCacheUpdates {
-		scaleSet.invalidateInstanceCache()
-	}
+	scaleSet.invalidateInstanceCache()
+	scaleSet.invalidateLastSizeRefreshWithLock()
 	klog.Errorf("PollUntilDone for DeleteInstances(%v) for %s failed with error: %v", requiredIds.InstanceIDs, scaleSet.Name, err)
 }
 
