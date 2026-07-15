@@ -738,6 +738,53 @@ func TestScaleSetAtomicIncreaseSizePollerFailure(t *testing.T) {
 
 // TestIncreaseSizeOnVMProvisioningFailed has been tweeked only for Uniform Orchestration mode.
 // If ProvisioningState == failed and power state is not running, Status.State == InstanceCreating with errorInfo populated.
+func TestScaleSetAtomicIncreaseSizeDeallocateNotImplemented(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	expectedScaleSets := newTestVMSSList(3, testASG, "eastus", armcompute.OrchestrationModeUniform)
+	expectedVMSSVMs := newTestVMSSVMList(3)
+
+	provider := newTestProvider(t)
+
+	mockVMSSClient := mock_virtualmachinescalesetclient.NewMockInterface(ctrl)
+	mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
+	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+	// No BeginCreateOrUpdate call should be made for deallocate policy.
+	mockDeleteClient := NewMockVMSSDeleteClient(ctrl)
+	provider.azureManager.azClient.vmssClientForDelete = mockDeleteClient
+
+	mockVMClient := mock_virtualmachineclient.NewMockInterface(ctrl)
+	mockVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return([]*armcompute.VirtualMachine{}, nil).AnyTimes()
+	provider.azureManager.azClient.virtualMachinesClient = mockVMClient
+
+	mockVMSSVMClient := mock_virtualmachinescalesetvmclient.NewMockInterface(ctrl)
+	mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), provider.azureManager.config.ResourceGroup, testASG).Return(expectedVMSSVMs, nil).AnyTimes()
+	provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+	err := provider.azureManager.forceRefresh()
+	assert.NoError(t, err)
+
+	ss := &ScaleSet{
+		azureRef:        azureRef{Name: testASG},
+		manager:         provider.azureManager,
+		minSize:         1,
+		maxSize:         5,
+		scaleDownPolicy: deallocate.Deallocate,
+	}
+	registered := provider.azureManager.RegisterNodeGroup(ss)
+	assert.True(t, registered)
+
+	err = provider.NodeGroups()[0].AtomicIncreaseSize(2)
+	assert.Equal(t, cloudprovider.ErrNotImplemented, err)
+
+	// Target size should remain unchanged (3).
+	targetSize, err := provider.NodeGroups()[0].TargetSize()
+	assert.NoError(t, err)
+	assert.Equal(t, 3, targetSize)
+}
+
 func TestScaleSetIncreaseSizeOnVMProvisioningFailed(t *testing.T) {
 	testCases := map[string]struct {
 		expectInstanceRunning    bool
