@@ -422,7 +422,14 @@ func (scaleSet *ScaleSet) IncreaseSize(delta int) error {
 // "doesn't wait until the new instances appear" — the blocking behavior is required
 // for atomic-scale-up ProvisioningRequest support to provide a capacity guarantee
 // before workloads are admitted.
+//
+// Note: this currently only applies to delete scale down mode. This will be disabled for now
+// for deallocate mode.
 func (scaleSet *ScaleSet) AtomicIncreaseSize(delta int) error {
+	if scaleSet.scaleDownPolicy == deallocate.Deallocate {
+		return cloudprovider.ErrNotImplemented
+	}
+
 	size, err := scaleSet.canIncreaseSize(delta)
 	if err != nil {
 		return err
