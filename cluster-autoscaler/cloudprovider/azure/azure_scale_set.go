@@ -303,6 +303,16 @@ func (scaleSet *ScaleSet) getScaleSetSize() (int64, error) {
 			return -1, err
 		}
 		size -= int64(totalDeallocationInstances)
+		if size < 0 {
+			// A negative deallocate-adjusted size means the deallocated/deallocating count
+			// exceeds the reported capacity, which is only possible when the caches are
+			// inconsistent (e.g. instances removed out-of-band). Surface it as an error
+			// rather than publishing a negative target, mirroring the size == -1 guard above.
+			err := fmt.Errorf("failed to get scale set size for %s: capacity minus %d deallocated/deallocating instances is negative (%d); instance cache likely stale",
+				scaleSet.Name, totalDeallocationInstances, size)
+			klog.V(3).Infof("getScaleSetSize: negative deallocate-adjusted size (actual err:%v)", err)
+			return -1, err
+		}
 		klog.V(3).Infof("Found: %d instances in deallocated state, returning target size: %d for scaleSet %s",
 			totalDeallocationInstances, size, scaleSet.Name)
 	}

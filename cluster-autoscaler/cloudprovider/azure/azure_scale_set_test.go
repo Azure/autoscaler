@@ -272,6 +272,40 @@ func TestScaleSetTargetSizeReturnsErrorForCachedNegativeSize(t *testing.T) {
 	assert.Equal(t, -1, size)
 }
 
+// TestScaleSetTargetSizeReturnsErrorForNegativeDeallocateAdjustedSize verifies the
+// deallocate-mode guard in getScaleSetSize: when the deallocated/deallocating count
+// (from the instance cache) exceeds the reported VMSS capacity — only possible when the
+// caches are inconsistent, e.g. instances removed out-of-band — the subtraction would go
+// negative, and we surface an error instead of publishing a negative target size.
+func TestScaleSetTargetSizeReturnsErrorForNegativeDeallocateAdjustedSize(t *testing.T) {
+	provider := newTestProvider(t)
+	err := provider.azureManager.forceRefresh()
+	assert.NoError(t, err)
+
+	scaleSet := newTestScaleSetDeallocateMode(provider.azureManager, testASG)
+	// Pin a valid reported capacity of 3 (avoid a live size refresh).
+	scaleSet.curSize = 3
+	scaleSet.lastSizeRefresh = time.Now()
+	scaleSet.sizeRefreshPeriod = time.Hour
+
+	// Seed the instance cache with more deallocated instances (5) than the reported
+	// capacity (3), simulating a stale cache after instances were removed out-of-band.
+	scaleSet.instanceCache = []cloudprovider.Instance{
+		{Id: "0", Status: &cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated}},
+		{Id: "1", Status: &cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated}},
+		{Id: "2", Status: &cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated}},
+		{Id: "3", Status: &cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated}},
+		{Id: "4", Status: &cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated}},
+	}
+	scaleSet.lastInstanceRefresh = time.Now()
+	scaleSet.instancesRefreshPeriod = time.Hour
+
+	size, err := scaleSet.TargetSize()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "deallocated/deallocating instances is negative")
+	assert.Equal(t, -1, size)
+}
+
 func TestScaleSetIncreaseSize(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
