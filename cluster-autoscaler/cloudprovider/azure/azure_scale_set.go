@@ -303,6 +303,16 @@ func (scaleSet *ScaleSet) getScaleSetSize() (int64, error) {
 			return -1, err
 		}
 		size -= int64(totalDeallocationInstances)
+		if size < 0 {
+			// A negative deallocate-adjusted size means the deallocated/deallocating count
+			// exceeds the reported capacity, which is only possible when the caches are
+			// inconsistent (e.g. instances removed out-of-band). Surface it as an error
+			// rather than publishing a negative target, mirroring the size == -1 guard above.
+			err := fmt.Errorf("failed to get scale set size for %s: capacity minus %d deallocated/deallocating instances is negative (%d); instance cache likely stale",
+				scaleSet.Name, totalDeallocationInstances, size)
+			klog.V(3).Infof("getScaleSetSize: negative deallocate-adjusted size (actual err:%v)", err)
+			return -1, err
+		}
 		klog.V(3).Infof("Found: %d instances in deallocated state, returning target size: %d for scaleSet %s",
 			totalDeallocationInstances, size, scaleSet.Name)
 	}
@@ -652,6 +662,14 @@ func (scaleSet *ScaleSet) retryCreateOrUpdateWithFreshETag(ctx context.Context, 
 
 	// Persist the freshly-fetched VMSS (ETag and capacity) for subsequent operations.
 	scaleSet.manager.azureCache.setScaleSet(scaleSet.Name, fresh)
+
+	// The refreshed VMSS reflects the concurrent writer's change (for example, instances
+	// removed by an out-of-band delete while in deallocate mode). Invalidate the instance
+	// cache so the deallocated/deallocating count consumed by getScaleSetSize is recomputed
+	// from fresh Azure state; otherwise a stale count could be subtracted from the fresh
+	// capacity and yield an incorrect (potentially negative) target size. Callers of this
+	// method hold sizeMutex; invalidateInstanceCache guards the instance cache separately.
+	scaleSet.invalidateInstanceCache()
 
 	// If another writer already grew the VMSS to at least our target, the desired floor
 	// is already met; don't issue a PUT that would shrink it back down. Return the fresh
