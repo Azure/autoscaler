@@ -18,6 +18,7 @@ package input
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -44,6 +45,7 @@ import (
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/recommender/model"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target"
 	controllerfetcher "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/target/controller_fetcher"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/client"
 	metrics_recommender "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/recommender"
 )
 
@@ -71,6 +73,9 @@ type ClusterStateFeeder interface {
 	// LoadRealTimeMetrics updates clusterState with current usage metrics of containers.
 	LoadRealTimeMetrics(ctx context.Context)
 
+	// DeleteRemovedPods deletes pods that were identified as removed in the last LoadPods call.
+	DeleteRemovedPods()
+
 	// GarbageCollectCheckpoints removes historical checkpoints that don't have a matching VPA.
 	GarbageCollectCheckpoints(ctx context.Context)
 }
@@ -91,6 +96,7 @@ type ClusterStateFeederFactory struct {
 	RecommenderName     string
 	IgnoredNamespaces   []string
 	VpaObjectNamespace  string
+	podsToDelete        []model.PodID
 }
 
 // Make creates new ClusterStateFeeder with internal data providers, based on kube client.
@@ -110,6 +116,7 @@ func (m ClusterStateFeederFactory) Make() *clusterStateFeeder {
 		recommenderName:     m.RecommenderName,
 		ignoredNamespaces:   m.IgnoredNamespaces,
 		vpaObjectNamespace:  m.VpaObjectNamespace,
+		podsToDelete:        m.podsToDelete,
 	}
 }
 
@@ -182,6 +189,7 @@ func newPodClients(kubeClient kube_client.Interface, resourceEventHandler cache.
 		Handler:       resourceEventHandler,
 		ResyncPeriod:  time.Hour,
 		Indexers:      cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc},
+		Transform:     client.StripManagedFields,
 	}
 
 	store, controller := cache.NewInformerWithOptions(informerOptions)
@@ -221,6 +229,7 @@ type clusterStateFeeder struct {
 	recommenderName     string
 	ignoredNamespaces   []string
 	vpaObjectNamespace  string
+	podsToDelete        []model.PodID
 }
 
 func (feeder *clusterStateFeeder) InitFromHistoryProvider(historyProvider history.HistoryProvider) {
@@ -365,7 +374,7 @@ func (feeder *clusterStateFeeder) cleanupCheckpointsForNamespace(ctx context.Con
 		vpaID := model.VpaID{Namespace: checkpoint.Namespace, VpaName: checkpoint.Spec.VPAObjectName}
 		if !allVPAKeys[vpaID] {
 			if errFeeder := feeder.vpaCheckpointClient.VerticalPodAutoscalerCheckpoints(namespace).Delete(ctx, checkpoint.Name, metav1.DeleteOptions{}); errFeeder != nil {
-				err = fmt.Errorf("failed to delete orphaned checkpoint %s: %w", klog.KRef(namespace, checkpoint.Name), err)
+				err = errors.Join(err, fmt.Errorf("failed to delete orphaned checkpoint %s: %w", klog.KRef(namespace, checkpoint.Name), errFeeder))
 				continue
 			}
 			klog.V(3).InfoS("Orphaned VPA checkpoint cleanup - deleting", "checkpoint", klog.KRef(namespace, checkpoint.Name))
@@ -471,16 +480,19 @@ func (feeder *clusterStateFeeder) LoadVPAs(ctx context.Context) {
 func (feeder *clusterStateFeeder) LoadPods() {
 	podSpecs, err := feeder.specClient.GetPodSpecs()
 	if err != nil {
-		klog.ErrorS(err, "Cannot get SimplePodSpecs")
+		klog.ErrorS(err, "Cannot get SimplePodSpecs, skipping LoadPods cycle")
+		return
 	}
 	pods := make(map[model.PodID]*spec.BasicPodSpec)
 	for _, spec := range podSpecs {
 		pods[spec.ID] = spec
 	}
+	feeder.podsToDelete = nil
 	for key := range feeder.clusterState.Pods() {
+		// The pods aren't deleted from the clusterState while loading pods since OomInfo from these removed containers
+		// may still need to be processed. We delete these pods after the OomInfo is processed.
 		if _, exists := pods[key]; !exists {
-			klog.V(3).InfoS("Deleting Pod", "pod", klog.KRef(key.Namespace, key.PodName))
-			feeder.clusterState.DeletePod(key)
+			feeder.podsToDelete = append(feeder.podsToDelete, key)
 		}
 	}
 	for _, pod := range pods {
@@ -493,11 +505,23 @@ func (feeder *clusterStateFeeder) LoadPods() {
 				klog.V(0).InfoS("Failed to add container", "container", container.ID, "error", err)
 			}
 		}
+		initContainerNames := make([]string, 0, len(pod.InitContainers))
 		for _, initContainer := range pod.InitContainers {
-			podInitContainers := feeder.clusterState.Pods()[pod.ID].InitContainers
-			feeder.clusterState.Pods()[pod.ID].InitContainers = append(podInitContainers, initContainer.ID.ContainerName)
+			initContainerNames = append(initContainerNames, initContainer.ID.ContainerName)
+		}
+		if err = feeder.clusterState.SetInitContainers(pod.ID, initContainerNames); err != nil {
+			klog.V(0).InfoS("Failed to set init containers", "pod", klog.KRef(pod.ID.Namespace, pod.ID.PodName), "error", err)
 		}
 	}
+}
+
+// DeleteRemovedPods deletes pods that were identified as removed in the last LoadPods call.
+func (feeder *clusterStateFeeder) DeleteRemovedPods() {
+	for _, key := range feeder.podsToDelete {
+		klog.V(3).InfoS("Deleting Pod", "pod", klog.KRef(key.Namespace, key.PodName))
+		feeder.clusterState.DeletePod(key)
+	}
+	feeder.podsToDelete = nil
 }
 
 func (feeder *clusterStateFeeder) LoadRealTimeMetrics(ctx context.Context) {

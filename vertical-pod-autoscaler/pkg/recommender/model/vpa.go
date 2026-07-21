@@ -17,8 +17,9 @@ limitations under the License.
 package model
 
 import (
+	"cmp"
 	"maps"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -68,8 +69,8 @@ func (conditionsMap *vpaConditionsMap) AsList() []vpa_types.VerticalPodAutoscale
 	}
 
 	// Sort conditions by type to avoid elements floating on the list
-	sort.Slice(conditions, func(i, j int) bool {
-		return conditions[i].Type < conditions[j].Type
+	slices.SortFunc(conditions, func(a, b vpa_types.VerticalPodAutoscalerCondition) int {
+		return cmp.Compare(a.Type, b.Type)
 	})
 
 	return conditions
@@ -208,6 +209,9 @@ type Vpa struct {
 
 	// mutex protects concurrent access to conditions and recommendation fields
 	mutex sync.RWMutex
+
+	// Generation is the generation of the VPA object observed by the recommender.
+	Generation int64
 }
 
 // NewVpa returns a new Vpa with a given ID and pod selector. Doesn't set the
@@ -228,6 +232,7 @@ func NewVpa(id VpaID, selector labels.Selector, created time.Time) *Vpa {
 		// to the version requested by the client server side.
 		APIVersion: vpa_types.SchemeGroupVersion.Version,
 		PodCount:   0,
+		Generation: 0,
 	}
 	return vpa
 }
@@ -378,6 +383,7 @@ func (vpa *Vpa) AsStatus() *vpa_types.VerticalPodAutoscalerStatus {
 	if vpa.recommendation != nil {
 		status.Recommendation = vpa.recommendation
 	}
+	status.ObservedGeneration = &vpa.Generation
 	return status
 }
 

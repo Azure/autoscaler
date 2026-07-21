@@ -34,7 +34,7 @@ import (
 	"k8s.io/apiserver/pkg/server/mux"
 	"k8s.io/apiserver/pkg/server/routes"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	cqv1alpha1 "k8s.io/autoscaler/cluster-autoscaler/apis/capacityquota/autoscaling.x-k8s.io/v1alpha1"
+	cqv1beta1 "k8s.io/autoscaler/cluster-autoscaler/apis/capacityquota/autoscaling.x-k8s.io/v1beta1"
 	autoscalerbuilder "k8s.io/autoscaler/cluster-autoscaler/builder"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/config/flags"
@@ -46,6 +46,14 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/version"
 	"k8s.io/client-go/informers"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+
+	// Cloud providers must be explicitly imported to be registered in the builder.
+	// The registration pattern allows for customizing the set of supported cloud providers
+	// by including or excluding these blank imports. This is particularly useful for
+	// external forks that want to avoid unnecessary dependencies.
+	// The router package is used to provide support for custom build tags (e.g. -tags aws).
+	_ "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/router"
+
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	kube_flag "k8s.io/component-base/cli/flag"
@@ -69,7 +77,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(cqv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(cqv1beta1.AddToScheme(scheme))
 	// TODO: add other CRDs
 }
 
@@ -135,7 +143,8 @@ func run(healthCheck *metrics.HealthCheck, debuggingSnapshotter debuggingsnapsho
 			for {
 				select {
 				case <-ctx.Done():
-					// TODO: handle graceful shutdown with context
+					// Context is also passed down to RunOnce, so a long-running
+					// iteration in progress will be interrupted and cleaned up there.
 					return nil
 				default:
 					trigger.Wait(previousRun)
@@ -152,14 +161,15 @@ func run(healthCheck *metrics.HealthCheck, debuggingSnapshotter debuggingsnapsho
 						os.Exit(0)
 					}
 
-					loop.RunAutoscalerOnce(autoscaler, healthCheck, lastRun)
+					loop.RunAutoscalerOnce(ctx, autoscaler, healthCheck, lastRun)
 				}
 			}
 		} else {
 			for {
 				select {
 				case <-ctx.Done():
-					// TODO: handle graceful shutdown with context
+					// Context is also passed down to RunOnce, so a long-running
+					// iteration in progress will be interrupted and cleaned up there.
 					return nil
 				case <-time.After(autoscalingOpts.ScanInterval):
 					// Temporary + fork only, will be removed after CA is made restartable by PUT AP and have NodeGroups passed in by flags.
@@ -173,7 +183,7 @@ func run(healthCheck *metrics.HealthCheck, debuggingSnapshotter debuggingsnapsho
 						os.Exit(0)
 					}
 
-					loop.RunAutoscalerOnce(autoscaler, healthCheck, time.Now())
+					loop.RunAutoscalerOnce(ctx, autoscaler, healthCheck, time.Now())
 				}
 			}
 		}
@@ -260,7 +270,7 @@ func main() {
 	}
 	ctrl.SetLogger(klog.NewKlogr())
 
-	healthCheck := metrics.NewHealthCheck(autoscalingOpts.MaxInactivityTime, autoscalingOpts.MaxFailingTime)
+	healthCheck := metrics.NewHealthCheck(autoscalingOpts.MaxInactivityTime, autoscalingOpts.MaxFailingTime, autoscalingOpts.MaxStartupTime)
 
 	klog.V(1).Infof("Cluster Autoscaler %s", version.ClusterAutoscalerVersion)
 

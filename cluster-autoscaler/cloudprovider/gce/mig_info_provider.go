@@ -19,7 +19,6 @@ package gce
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"path"
 	"regexp"
 	"strings"
@@ -59,6 +58,8 @@ type MigInfoProvider interface {
 	GetListManagedInstancesResults(migRef GceRef) (string, error)
 	// GetMigIsStable returns whether given MIG is stable. A stable state means that: none of the instances in the managed instance group is currently undergoing any type of change (for example, creation, restart, or deletion); no future changes are scheduled for instances in the managed instance group; and the managed instance group itself is not being modified.
 	GetMigIsStable(migRef GceRef) (bool, error)
+	// RefreshMigInfo updates the cached information for a specific MIG without rebuilding the full zone cache
+	RefreshMigInfo(migRef GceRef) error
 }
 
 type timeProvider interface {
@@ -351,12 +352,21 @@ func (c *cachingMigInfoProvider) GetMigTargetSize(migRef GceRef) (int64, error) 
 		return targetSize, nil
 	}
 
-	err := c.fillMigInfoCache()
+	var err error
+	if c.cache.IsMigTargetSizeCacheEmpty() {
+		// Cache is cold after Refresh() -- list all MIGs and populate the cache.
+		err = c.fillMigInfoCache()
+	}
+
 	targetSize, found = c.cache.GetMigTargetSize(migRef)
-	if err == nil && found {
+	if found && err == nil {
 		return targetSize, nil
 	}
 
+	// We get here in one of 3 cases:
+	//  * InvalidateMigTargetSize was called for this specific mig, so it's not found in cache
+	//  * fillMigInfoCache returned an error
+	//  * MIG not found
 	err = c.fillSingleMigInfo(migRef)
 	if err != nil {
 		return 0, err
@@ -527,6 +537,11 @@ func (c *cachingMigInfoProvider) fillMigInfoCache() error {
 	return nil
 }
 
+// RefreshMigInfo updates the cached information for a specific MIG without rebuilding the full zone cache
+func (c *cachingMigInfoProvider) RefreshMigInfo(migRef GceRef) error {
+	return c.fillSingleMigInfo(migRef)
+}
+
 func (c *cachingMigInfoProvider) fillSingleMigInfo(migRef GceRef) error {
 	igm, err := c.gceClient.FetchMig(migRef)
 	if err != nil {
@@ -549,16 +564,9 @@ func (c *cachingMigInfoProvider) setMigInfoCache(migRef GceRef, mig *gce.Instanc
 	c.cache.SetListManagedInstancesResults(migRef, mig.ListManagedInstancesResults)
 	c.cache.SetMigInstancesStateCount(migRef, createInstancesStateCount(mig.TargetSize, mig.CurrentActions))
 
-	templateUrl, err := url.Parse(mig.InstanceTemplate)
-	if err == nil {
-		_, templateName := path.Split(templateUrl.EscapedPath())
-		regional, err := IsInstanceTemplateRegional(templateUrl.String())
-		if err != nil {
-			klog.Errorf("Error parsing instance template url: %v; err=%v ", templateUrl.String(), err)
-		} else {
-			c.cache.SetMigInstanceTemplateName(migRef, InstanceTemplateName{templateName, regional})
-		}
-	}
+	_, templateName := path.Split(mig.InstanceTemplate)
+	regional := IsInstanceTemplateRegional(mig.InstanceTemplate)
+	c.cache.SetMigInstanceTemplateName(migRef, InstanceTemplateName{templateName, regional})
 }
 
 func (c *cachingMigInfoProvider) GetMigIsStable(migRef GceRef) (bool, error) {

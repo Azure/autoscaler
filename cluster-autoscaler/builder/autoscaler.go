@@ -27,18 +27,19 @@ import (
 	cbctrl "k8s.io/autoscaler/cluster-autoscaler/capacitybuffer/controller"
 	"k8s.io/autoscaler/cluster-autoscaler/capacitybuffer/fakepods"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/scaleupfailures"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	cacontext "k8s.io/autoscaler/cluster-autoscaler/context"
 	"k8s.io/autoscaler/cluster-autoscaler/core"
 	coreoptions "k8s.io/autoscaler/cluster-autoscaler/core/options"
 	"k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor"
 	"k8s.io/autoscaler/cluster-autoscaler/core/scaleup/orchestrator"
+	"k8s.io/autoscaler/cluster-autoscaler/core/utils"
 	"k8s.io/autoscaler/cluster-autoscaler/debuggingsnapshot"
 	"k8s.io/autoscaler/cluster-autoscaler/loop"
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
 	ca_processors "k8s.io/autoscaler/cluster-autoscaler/processors"
 	cbprocessor "k8s.io/autoscaler/cluster-autoscaler/processors/capacitybuffer"
-	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodeinfosprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/podinjection"
 	podinjectionbackoff "k8s.io/autoscaler/cluster-autoscaler/processors/podinjection/backoff"
@@ -48,6 +49,7 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/processors/scaledowncandidates/emptycandidates"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/scaledowncandidates/previouscandidates"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/status"
+	"k8s.io/autoscaler/cluster-autoscaler/resourcequotas/capacityquota"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot/predicate"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot/store"
@@ -158,7 +160,7 @@ func (b *AutoscalerBuilder) Build(ctx context.Context) (core.Autoscaler, *loop.L
 	deleteOptions := options.NewNodeDeleteOptions(autoscalingOptions)
 	drainabilityRules := rules.Default(deleteOptions)
 
-	var snapshotStore clustersnapshot.ClusterSnapshotStore = store.NewDeltaSnapshotStore(autoscalingOptions.ClusterSnapshotParallelism)
+	var snapshotStore clustersnapshot.ClusterSnapshotStore = store.NewDeltaSnapshotStore()
 	opts := coreoptions.AutoscalerOptions{
 		AutoscalingOptions:     autoscalingOptions,
 		FrameworkHandle:        fwHandle,
@@ -178,13 +180,17 @@ func (b *AutoscalerBuilder) Build(ctx context.Context) (core.Autoscaler, *loop.L
 	opts.Processors.TemplateNodeInfoProvider = nodeinfosprovider.NewDefaultTemplateNodeInfoProvider(&autoscalingOptions.NodeInfoCacheExpireTime, autoscalingOptions.ForceDaemonSets)
 	podListProcessor := podlistprocessor.NewDefaultPodListProcessor(scheduling.ScheduleAnywhere)
 
+	opts.ScaleUpFailuresRegistry = scaleupfailures.NewRegistry()
+	opts.LoopStartObservers = append(opts.LoopStartObservers, opts.ScaleUpFailuresRegistry)
+
 	var provisioningRequestInjector *provreq.ProvisioningRequestPodsInjector
 	if autoscalingOptions.ProvisioningRequestEnabled {
-		injector, err := b.buildProvisioningRequest(ctx, autoscalingOptions, &opts, podListProcessor)
+		injector, provreqProcessor, err := b.buildProvisioningRequest(ctx, autoscalingOptions, &opts, podListProcessor)
 		if err != nil {
 			return nil, nil, err
 		}
 		provisioningRequestInjector = injector
+		opts.LoopStartObservers = append(opts.LoopStartObservers, provreqProcessor)
 	}
 
 	var capacitybufferClient *capacityclient.CapacityBufferClient
@@ -225,6 +231,15 @@ func (b *AutoscalerBuilder) Build(ctx context.Context) (core.Autoscaler, *loop.L
 		}
 	}
 
+	if autoscalingOptions.CapacityQuotasEnabled {
+		cqReconciler := capacityquota.NewCapacityQuotaReconciler(b.manager.GetClient(), capacityquota.ReconcilerOptions{
+			NodeFilter: utils.VirtualKubeletNodeFilter{},
+		})
+		if err := cqReconciler.SetupWithManager(b.manager); err != nil {
+			return nil, nil, fmt.Errorf("failed to setup CapacityQuota reconciler: %w", err)
+		}
+	}
+
 	if autoscalingOptions.ProactiveScaleupEnabled {
 		podInjectionBackoffRegistry := podinjectionbackoff.NewFakePodControllerRegistry()
 
@@ -257,31 +272,6 @@ func (b *AutoscalerBuilder) Build(ctx context.Context) (core.Autoscaler, *loop.L
 	}
 	opts.Processors.ScaleDownNodeProcessor = cp
 
-	var nodeInfoComparator nodegroupset.NodeInfoComparator
-	if len(autoscalingOptions.BalancingLabels) > 0 {
-		nodeInfoComparator = nodegroupset.CreateLabelNodeInfoComparator(autoscalingOptions.BalancingLabels)
-	} else {
-		// TODO elmiko - now that we are passing the AutoscalerOptions in to the
-		// NewCloudProvider function, we should migrate these cloud provider specific
-		// configurations to the NewCloudProvider method so that we remove more provider
-		// code from the core.
-		nodeInfoComparatorBuilder := nodegroupset.CreateGenericNodeInfoComparator
-		if autoscalingOptions.CloudProviderName == cloudprovider.AzureProviderName {
-			nodeInfoComparatorBuilder = nodegroupset.CreateAzureNodeInfoComparator
-		} else if autoscalingOptions.CloudProviderName == cloudprovider.AwsProviderName {
-			nodeInfoComparatorBuilder = nodegroupset.CreateAwsNodeInfoComparator
-			opts.Processors.TemplateNodeInfoProvider = nodeinfosprovider.NewAsgTagResourceNodeInfoProvider(&autoscalingOptions.NodeInfoCacheExpireTime, autoscalingOptions.ForceDaemonSets)
-		} else if autoscalingOptions.CloudProviderName == cloudprovider.GceProviderName {
-			nodeInfoComparatorBuilder = nodegroupset.CreateGceNodeInfoComparator
-			opts.Processors.TemplateNodeInfoProvider = nodeinfosprovider.NewAnnotationNodeInfoProvider(&autoscalingOptions.NodeInfoCacheExpireTime, autoscalingOptions.ForceDaemonSets)
-		}
-		nodeInfoComparator = nodeInfoComparatorBuilder(autoscalingOptions.BalancingExtraIgnoredLabels, autoscalingOptions.NodeGroupSetRatios)
-	}
-
-	opts.Processors.NodeGroupSetProcessor = &nodegroupset.BalancingNodeGroupSetProcessor{
-		Comparator: nodeInfoComparator,
-	}
-
 	// These metrics should be published only once.
 	metrics.UpdateCPULimitsCores(autoscalingOptions.MinCoresTotal, autoscalingOptions.MaxCoresTotal)
 	metrics.UpdateMemoryLimitsBytes(autoscalingOptions.MinMemoryTotal, autoscalingOptions.MaxMemoryTotal)
@@ -295,7 +285,7 @@ func (b *AutoscalerBuilder) Build(ctx context.Context) (core.Autoscaler, *loop.L
 	}
 
 	// Create autoscaler.
-	autoscaler, err := core.NewAutoscaler(ctx, opts, b.informerFactory)
+	autoscaler, err := NewAutoscaler(ctx, opts, b.informerFactory)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -22,7 +22,7 @@ import (
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v6"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v7"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v8"
 
 	apiv1 "k8s.io/api/core/v1"
@@ -252,6 +252,16 @@ func (vmPool *VMPool) DeleteNodes(nodes []*apiv1.Node) error {
 
 	klog.V(3).Infof("Deleting nodes from vmPool %s: %v", vmPool.Name, providerIDs)
 
+	// In non-strict mode, proactively mark instances as deleting in the cache so
+	// HasInstance reports them as gone before the next cache refresh. A failed
+	// delete is reconciled by the deferred invalidateCache() below, which forces a
+	// refresh on the next loop.
+	if !vmPool.manager.config.StrictCacheUpdates {
+		for _, providerID := range providerIDs {
+			vmPool.manager.azureCache.setInstanceStateByProviderID(providerID, cloudprovider.InstanceDeleting)
+		}
+	}
+
 	machineNames := make([]*string, len(providerIDs))
 	for i, providerID := range providerIDs {
 		// extract the machine name from the providerID by splitting the providerID by '/' and get the last element
@@ -464,7 +474,16 @@ func (vmPool *VMPool) Nodes() ([]cloudprovider.Instance, error) {
 		if err != nil {
 			return nil, err
 		}
-		nodes = append(nodes, cloudprovider.Instance{Id: resourceID})
+		// Surface the VM provisioning state so the cache (and HasInstance /
+		// ClusterStateRegistry through it) can observe VMs that are being deleted.
+		// VMs pools do not support fast-delete-on-failed-provisioning, so the power
+		// state is irrelevant here.
+		var provisioningState *string
+		if vm.Properties != nil {
+			provisioningState = vm.Properties.ProvisioningState
+		}
+		status := instanceStatusFromProvisioningStateAndPowerState(resourceID, provisioningState, vmPowerStateRunning, disableFastDeleteOnFailure)
+		nodes = append(nodes, cloudprovider.Instance{Id: resourceID, Status: status})
 	}
 
 	return nodes, nil
@@ -514,7 +533,13 @@ func (vmPool *VMPool) getAgentpoolFromAzure() (armcontainerservice.AgentPool, er
 	return resp.AgentPool, nil
 }
 
-// AtomicIncreaseSize is not implemented.
+// AtomicIncreaseSize increases the VMPool size by delta and blocks until the
+// underlying agent pool PUT operation completes. IncreaseSize already issues a
+// synchronous PUT that waits via PollUntilDone, so it satisfies the atomic
+// contract: on success the capacity change has been fully applied by Azure
+// before returning. This blocking behavior is required for atomic-scale-up
+// ProvisioningRequest support to provide a capacity guarantee before workloads
+// are admitted.
 func (vmPool *VMPool) AtomicIncreaseSize(delta int) error {
-	return cloudprovider.ErrNotImplemented
+	return vmPool.IncreaseSize(delta)
 }

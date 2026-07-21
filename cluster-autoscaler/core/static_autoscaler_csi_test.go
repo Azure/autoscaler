@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	sdplanner "k8s.io/autoscaler/cluster-autoscaler/core/scaledown/planner"
+	"k8s.io/autoscaler/cluster-autoscaler/resourcequotas"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot/predicate"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/clustersnapshot/store"
 	csinodeprovider "k8s.io/autoscaler/cluster-autoscaler/simulator/csi/provider"
@@ -257,6 +258,7 @@ func TestStaticAutoscalerCSI(t *testing.T) {
 						ScaleDownUtilizationThreshold: 0.7,
 						MaxNodeProvisionTime:          time.Hour,
 					},
+					ScaleDownEnabled:               true,
 					MaxNodesTotal:                  1000,
 					MaxCoresTotal:                  1000,
 					MaxMemoryTotal:                 100000000,
@@ -289,7 +291,8 @@ func TestStaticAutoscalerCSI(t *testing.T) {
 			// internal removal simulator uses the same snapshot instance that RunOnce() initializes.
 			deleteOptions := options.NewNodeDeleteOptions(autoscaler.AutoscalingOptions)
 			drainabilityRules := rules.Default(deleteOptions)
-			newSDPlanner := sdplanner.New(autoscaler.AutoscalingContext, autoscaler.processors, deleteOptions, drainabilityRules)
+			factory := resourcequotas.NewTrackerFactory(resourcequotas.TrackerOptions{CustomResourcesProcessor: autoscaler.processors.CustomResourcesProcessor, QuotaProvider: resourcequotas.NewCloudMinProvider(autoscaler.AutoscalingContext.CloudProvider)})
+			newSDPlanner := sdplanner.New(autoscaler.AutoscalingContext, autoscaler.processors, deleteOptions, drainabilityRules, factory)
 			autoscaler.scaleDownPlanner = newSDPlanner
 			autoscaler.processorCallbacks.scaleDownPlanner = newSDPlanner
 
@@ -299,17 +302,17 @@ func TestStaticAutoscalerCSI(t *testing.T) {
 			autoscaler.processors.ScaleDownStatusProcessor = scaleDownProcessor
 
 			if len(tc.expectedScaleDowns) > 0 {
-				err = autoscaler.RunOnce(now)
+				err = autoscaler.RunOnce(t.Context(), now)
 				assert.NoError(t, err)
 			}
 
 			// Run one autoscaler loop.
-			require.NoError(t, autoscaler.RunOnce(now.Add(2*time.Minute)))
+			require.NoError(t, autoscaler.RunOnce(t.Context(), now.Add(2*time.Minute)))
 
 			// Scale-down is a multi-iteration process (mark unneeded -> taint -> delete after delay).
 			// Run one more loop to allow the actuator to call the cloud provider ScaleDown callbacks.
 			if len(tc.expectedScaleDowns) > 0 {
-				require.NoError(t, autoscaler.RunOnce(now.Add(4*time.Minute)))
+				require.NoError(t, autoscaler.RunOnce(t.Context(), now.Add(4*time.Minute)))
 				for range allExpectedScaleDowns {
 					select {
 					case <-setupConfig.nodesDeleted:

@@ -21,6 +21,7 @@ import (
 
 	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/metrics/admission"
 )
@@ -40,6 +41,6 @@ type Handler interface {
 	AdmissionResource() admission.AdmissionResource
 	// DisallowIncorrectObjects returns whether incorrect objects (eg. unparsable, not passing validations) should be disallowed by Admission Server.
 	DisallowIncorrectObjects() bool
-	// GetPatches returns patches for given AdmissionRequest
-	GetPatches(context.Context, *admissionv1.AdmissionRequest) ([]PatchRecord, error)
+	// GetPatches returns patches and warnings for given AdmissionRequest
+	GetPatches(context.Context, *admissionv1.AdmissionRequest) ([]PatchRecord, []string, field.ErrorList)
 }

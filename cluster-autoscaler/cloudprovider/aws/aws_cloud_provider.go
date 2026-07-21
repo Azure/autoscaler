@@ -26,13 +26,24 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/builder"
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	coreoptions "k8s.io/autoscaler/cluster-autoscaler/core/options"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupset"
+	"k8s.io/autoscaler/cluster-autoscaler/processors/nodeinfosprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/errors"
 	"k8s.io/autoscaler/cluster-autoscaler/utils/gpu"
+	"k8s.io/client-go/informers"
 	klog "k8s.io/klog/v2"
 )
+
+func init() {
+	builder.RegisterCloudProvider(cloudprovider.AwsProviderName, func(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDiscoveryOptions, rl *cloudprovider.ResourceLimiter, informerFactory informers.SharedInformerFactory) cloudprovider.CloudProvider {
+		return BuildAWS(opts, do, rl)
+	})
+	builder.SetDefaultCloudProvider(cloudprovider.AwsProviderName)
+}
 
 const (
 	// GPULabel is the label added to nodes with GPU resource.
@@ -474,5 +485,14 @@ func BuildAWS(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupDis
 		klog.Fatalf("Failed to create AWS cloud provider: %v", err)
 	}
 	RegisterMetrics()
+
+	// Configure AWS specific processors
+	if opts.Processors != nil {
+		opts.Processors.TemplateNodeInfoProvider = nodeinfosprovider.NewAsgTagResourceNodeInfoProvider(&opts.AutoscalingOptions.NodeInfoCacheExpireTime, opts.AutoscalingOptions.ForceDaemonSets)
+		opts.Processors.NodeGroupSetProcessor = &nodegroupset.BalancingNodeGroupSetProcessor{
+			Comparator: nodegroupset.CreateAwsNodeInfoComparator(opts.AutoscalingOptions.BalancingExtraIgnoredLabels, opts.AutoscalingOptions.NodeGroupSetRatios),
+		}
+	}
+
 	return provider
 }

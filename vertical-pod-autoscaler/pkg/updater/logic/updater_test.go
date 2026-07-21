@@ -28,12 +28,15 @@ import (
 	"golang.org/x/time/rate"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/utils/set"
 
 	vpa_types "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/features"
@@ -42,6 +45,7 @@ import (
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/priority"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/restriction"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/updater/utils"
+	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/annotations"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/status"
 	"k8s.io/autoscaler/vertical-pod-autoscaler/pkg/utils/test"
 )
@@ -247,7 +251,6 @@ func testRunOnceBase(
 	canInPlaceUpdate utils.InPlaceDecision,
 	isCPUBoostTest bool,
 ) {
-	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InPlaceOrRecreate, true)
 	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.CPUStartupBoost, true)
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -295,7 +298,7 @@ func testRunOnceBase(
 		pods[i].Labels = labels
 		if isCPUBoostTest {
 			pods[i].Annotations = map[string]string{
-				"startup-cpu-boost": "",
+				annotations.GetStartupCPUBoostAnnotationKey(containerName): "",
 			}
 			pods[i].Status.Conditions = []corev1.PodCondition{
 				{
@@ -640,9 +643,45 @@ func TestLogDeprecationWarnings(t *testing.T) {
 		})
 	}
 }
-func TestRunOnce_AutoUnboostThenEvict(t *testing.T) {
-	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InPlaceOrRecreate, true)
 
+func TestInfeasibleAttempts(t *testing.T) {
+	containerName := "container1"
+	pod1 := test.Pod().WithName("pod1").WithUID("pod1").AddContainer(test.Container().WithName(containerName).Get()).Get()
+	pod2 := test.Pod().WithName("pod2").WithUID("pod2").AddContainer(test.Container().WithName(containerName).Get()).Get()
+
+	vpa := test.VerticalPodAutoscaler().WithContainer(containerName).Get()
+
+	// Initialize updater with required fields for these functions
+	u := &updater{
+		recommendationProcessor: &test.FakeRecommendationProcessor{},
+		infeasibleAttempts:      make(map[types.UID]*vpa_types.RecommendedPodResources),
+	}
+
+	t.Run("recordInfeasibleAttempt stores recommendation", func(t *testing.T) {
+		u.recordInfeasibleAttempt(pod1, vpa)
+		u.recordInfeasibleAttempt(pod2, vpa)
+		assert.Len(t, u.infeasibleAttempts, 2)
+		assert.Contains(t, u.infeasibleAttempts, pod1.UID)
+		assert.Contains(t, u.infeasibleAttempts, pod2.UID)
+	})
+
+	t.Run("cleanupStaleInfeasibleAttempts removes old pods", func(t *testing.T) {
+		// Only pod1 is "live" now
+		livePodUIDs := set.New(pod1.UID)
+		u.cleanupStaleInfeasibleAttempts(livePodUIDs)
+		// pod1 should stay, pod2 should be deleted
+		assert.Len(t, u.infeasibleAttempts, 1)
+		assert.Contains(t, u.infeasibleAttempts, pod1.UID)
+		assert.NotContains(t, u.infeasibleAttempts, pod2.UID)
+	})
+
+	t.Run("cleanupStaleInfeasibleAttempts clears all if none live", func(t *testing.T) {
+		u.cleanupStaleInfeasibleAttempts(set.New[types.UID]())
+		assert.Empty(t, u.infeasibleAttempts)
+	})
+}
+
+func TestRunOnce_AutoUnboostThenEvict(t *testing.T) {
 	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.CPUStartupBoost, true)
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -702,7 +741,7 @@ func TestRunOnce_AutoUnboostThenEvict(t *testing.T) {
 
 	// Cycle 1: Unboost the cpu
 	for i := range pods {
-		pods[i].Annotations = map[string]string{"startup-cpu-boost": ""}
+		pods[i].Annotations = map[string]string{annotations.GetStartupCPUBoostAnnotationKey(containerName): ""}
 		pods[i].Status.Conditions = []corev1.PodCondition{
 			{
 				Type:   corev1.PodReady,
@@ -739,8 +778,6 @@ func TestRunOnce_AutoUnboostThenEvict(t *testing.T) {
 }
 
 func TestRunOnce_AutoUnboostThenInPlace(t *testing.T) {
-	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.InPlaceOrRecreate, true)
-
 	featuregatetesting.SetFeatureGateDuringTest(t, features.MutableFeatureGate, features.CPUStartupBoost, true)
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -801,7 +838,7 @@ func TestRunOnce_AutoUnboostThenInPlace(t *testing.T) {
 
 	// Cycle 1: Unboost the cpu
 	for i := range pods {
-		pods[i].Annotations = map[string]string{"startup-cpu-boost": ""}
+		pods[i].Annotations = map[string]string{annotations.GetStartupCPUBoostAnnotationKey(containerName): ""}
 		pods[i].Status.Conditions = []corev1.PodCondition{
 			{
 				Type:   corev1.PodReady,
@@ -835,4 +872,56 @@ func TestRunOnce_AutoUnboostThenInPlace(t *testing.T) {
 	inplace.AssertNumberOfCalls(t, "InPlaceUpdate", 10)
 	inplace.AssertNumberOfCalls(t, "CanUnboost", 5) // all 5 from previous run only
 	eviction.AssertNumberOfCalls(t, "Evict", 0)
+}
+
+func TestIsInfeasibleError(t *testing.T) {
+	makeStatusErr := func(reason metav1.StatusReason, causeType metav1.CauseType) error {
+		return &apierrors.StatusError{
+			ErrStatus: metav1.Status{
+				Reason: reason,
+				Details: &metav1.StatusDetails{
+					Causes: []metav1.StatusCause{
+						{Type: causeType},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "NodeCapacity cause returns true",
+			err:  makeStatusErr(metav1.StatusReasonForbidden, "NodeCapacity"),
+			want: true,
+		},
+		{
+			name: "Forbidden with unknown cause returns false",
+			err:  makeStatusErr(metav1.StatusReasonForbidden, "SomethingElse"),
+			want: false,
+		},
+		{
+			name: "Non-Forbidden status error returns false",
+			err:  makeStatusErr(metav1.StatusReasonNotFound, "NodeCapacity"),
+			want: false,
+		},
+		{
+			name: "Plain error returns false",
+			err:  errors.New("plain error"),
+			want: false,
+		},
+		{
+			name: "Nil error returns false",
+			err:  nil,
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isInfeasibleError(tc.err))
+		})
+	}
 }

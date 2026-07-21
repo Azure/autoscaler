@@ -21,9 +21,10 @@ import (
 	"fmt"
 
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	cqv1alpha1 "k8s.io/autoscaler/cluster-autoscaler/apis/capacityquota/autoscaling.x-k8s.io/v1alpha1"
+	cqv1beta1 "k8s.io/autoscaler/cluster-autoscaler/apis/capacityquota/autoscaling.x-k8s.io/v1beta1"
 	"k8s.io/autoscaler/cluster-autoscaler/resourcequotas"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,13 +42,17 @@ func NewCapacityQuotasProvider(kubeClient client.Client) *Provider {
 
 // Quotas returns quotas built from CapacityQuota resources in the cluster.
 func (p *Provider) Quotas() ([]resourcequotas.Quota, error) {
-	capacityQuotas := &cqv1alpha1.CapacityQuotaList{}
+	capacityQuotas := &cqv1beta1.CapacityQuotaList{}
 	err := p.kubeClient.List(context.TODO(), capacityQuotas)
 	if err != nil {
 		return nil, err
 	}
 	var quotas []resourcequotas.Quota
 	for _, cq := range capacityQuotas.Items {
+		if !meta.IsStatusConditionTrue(cq.Status.Conditions, ValidCondition) {
+			klog.V(5).Infof("CapacityQuota %q is not valid, skipping", cq.Name)
+			continue
+		}
 		quota, err := newFromCapacityQuota(cq)
 		if err != nil {
 			klog.Errorf("Skipping CapacityQuota %q, err: %v", cq.Name, err)
@@ -76,7 +81,7 @@ func (lsq *labelSelectorQuota) Limits() map[string]int64 {
 	return lsq.limits
 }
 
-func newFromCapacityQuota(cq cqv1alpha1.CapacityQuota) (*labelSelectorQuota, error) {
+func newFromCapacityQuota(cq cqv1beta1.CapacityQuota) (*labelSelectorQuota, error) {
 	selector, err := labelSelectorAsSelector(cq.Spec.Selector)
 	if err != nil {
 		return nil, err
