@@ -99,21 +99,28 @@ git switch -c <topic-branch> cluster-autoscaler-release-1.36.0-aks
 
 5. Cherry-pick the main AKS fork delta commit for that line on the working branch.
 6. Cherry-pick any additional approved AKS fork commits after the main fork delta commit on the working branch.
-7. If any cherry-pick produces a conflict, **stop and present the conflict to the requestor** before resolving it. Show:
+7. The following files conflict on every new minor version in a predictable way and can be resolved without stopping for requestor input:
+
+   - `.devcontainer/devcontainer.json` — keep the fork version (name `"Azure CAS Dev"`, docker-outside-of-docker, Azure CLI, skaffold, ko, yq, AKS VS Code extensions, `remoteUser: vscode`), but bump the `go:X.Y` image tag to match the new upstream minor's Go version.
+   - `builder/Dockerfile` — keep the fork's MCR base image (`mcr.microsoft.com/oss/go/microsoft/golang:X.Y.Z`), bumping the version to match upstream. Do not revert to the plain `golang:` base image.
+
+   Document these as standard resolutions in the PR description.
+
+8. If any other cherry-pick produces a conflict, **stop and present the conflict to the requestor** before resolving it. Show:
    - the file and the two competing changes
    - what each side is doing and why they conflict
    - the available resolution options with a recommended option and rationale
    Wait for the requestor to confirm the resolution before proceeding. When applying the agreed resolution, **always replace the entire conflict block in a single operation** — from the `<<<<<<< HEAD` line through the `>>>>>>> <sha>` line inclusive. Never replace only the opening or closing marker alone; partial replacements leave orphaned content that compiles incorrectly. Document the agreed resolution in the PR description or in the resolving commit, including the affected files and rationale.
-8. Evaluate whether any `master-azure`-only compatibility commits must also be applied on the working branch.
-9. Run validation on the working branch.
-10. Open a PR from the working branch into `cluster-autoscaler-release-1.36.0-aks`.
-11. After the PR merges, apply the candidate tag to the merge commit on the release branch:
+9. Evaluate whether any `master-azure`-only compatibility commits must also be applied on the working branch.
+10. Run validation on the working branch.
+11. Open a PR from the working branch into `cluster-autoscaler-release-1.36.0-aks`.
+12. After the PR merges, apply the candidate tag to the merge commit on the release branch:
     ```bash
     git tag v1.36.0-aks-candidate <merge-sha>
     git push origin v1.36.0-aks-candidate
     ```
-12. Build an image from that candidate tag.
-13. After the image is fully built, add the official tag:
+13. Build an image from that candidate tag.
+14. After the image is fully built, add the official tag:
     ```bash
     git tag v1.36.0-aks <merge-sha>
     git push origin v1.36.0-aks
