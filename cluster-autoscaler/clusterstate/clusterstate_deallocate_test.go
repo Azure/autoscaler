@@ -30,7 +30,6 @@ import (
 	"k8s.io/autoscaler/cluster-autoscaler/config"
 	"k8s.io/autoscaler/cluster-autoscaler/metrics"
 	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroupconfig"
-	"k8s.io/autoscaler/cluster-autoscaler/processors/nodegroups/asyncnodegroups"
 	"k8s.io/autoscaler/cluster-autoscaler/simulator/framework"
 	. "k8s.io/autoscaler/cluster-autoscaler/utils/test"
 	"k8s.io/client-go/kubernetes/fake"
@@ -79,16 +78,22 @@ func TestHandleInstanceCreationErrorsStartDeallocatedFailed(t *testing.T) {
 	fakeClient := &fake.Clientset{}
 	fakeLogRecorder, _ := utils.NewStatusMapRecorder(fakeClient, "kube-system", kube_record.NewFakeRecorder(5), false, "my-cool-configmap")
 	mockMetrics := &mockMetrics{}
-	mockMetrics.On("RegisterFailedScaleUp", mock.Anything, mock.Anything, mock.Anything).Return()
-	clusterstate := newClusterStateRegistry(provider, ClusterStateRegistryConfig{}, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}), asyncnodegroups.NewDefaultAsyncNodeGroupStateChecker(), mockMetrics)
+	mockMetrics.On("RegisterFailedScaleUp", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mockMetrics.On("RegisterFailedNodeCreations", mock.Anything, mock.Anything).Return()
+	nodeInfos := map[string]*framework.NodeInfo{
+		"deallocate-pool": framework.NewTestNodeInfo(node),
+	}
+	registry := newMockTemplateNodeInfoRegistry(nodeInfos)
+	clusterstate := NewNotifiedClusterStateRegistry(provider, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}), registry, withMetrics(mockMetrics, provider))
 	clusterstate.RegisterScaleUp(mockedNodeGroup, 2, now)
 
 	// UpdateNodes will trigger handleInstanceCreationErrors.
-	err := clusterstate.UpdateNodes([]*apiv1.Node{}, nil, now)
+	err := clusterstate.UpdateNodes([]*apiv1.Node{}, now)
 	assert.NoError(t, err)
 
 	// Verify metrics were recorded.
-	mockMetrics.AssertCalled(t, "RegisterFailedScaleUp", metrics.FailedScaleUpReason("start-deallocated-failed"), "", "")
+	mockMetrics.AssertCalled(t, "RegisterFailedScaleUp", metrics.FailedScaleUpReason("start-deallocated-failed"), "", "", "")
+	mockMetrics.AssertCalled(t, "RegisterFailedNodeCreations", metrics.FailedScaleUpReason("start-deallocated-failed"), 2)
 
 	// Verify the node group is in backoff with the correct error code.
 	safety := clusterstate.NodeGroupScaleUpSafety(mockedNodeGroup, now)
