@@ -337,15 +337,25 @@ Prefer the smallest compatible backport over a broad sync.
 
 ## Validation
 
-At minimum, run the same main validation entry points used by this repo's CI:
+Run all CA unit tests except non-Azure cloud providers before committing or opening a PR. For new minor versions targeting a newer upstream Go version, set `GOTOOLCHAIN` to match:
+
+```bash
+GOTOOLCHAIN=go1.26.0 go test -count=1 -race \
+  $(GOTOOLCHAIN=go1.26.0 go list ./... | grep -v /cloudprovider/) \
+  ./cloudprovider/azure/...
+```
+
+For patch versions on the same Go version as the devcontainer, `GOTOOLCHAIN` can be omitted. The `grep -v /cloudprovider/` filter excludes non-Azure cloud providers; `./cloudprovider/azure/...` is added explicitly to include Azure. Do not filter on `vertical-pod-autoscaler/e2e` — that path does not appear in the CA module.
+
+The `test/integration/controllers` package requires a live Kubernetes API server and is expected to fail in local environments (`BeforeSuite` fails). This is pre-existing and does not need to be explained in the PR.
+
+Also run at minimum:
 
 ```bash
 hack/verify-all.sh -v
 ```
 
-```bash
-cd cluster-autoscaler && go test -v -coverprofile=coverage.txt -covermode=atomic -race $(go list ./... | grep -v vertical-pod-autoscaler/e2e | grep -v /cloudprovider/ && go list ./cloudprovider/azure/...)
-```
+Note: `hack/verify-all.sh` may report a VPA flags documentation failure (`verify-vpa-flags.sh`). Confirm this failure exists on the upstream base before attributing it to fork changes.
 
 Do not use `make release-validate` as the AKS fork release gate. That target expects an upstream-style `cluster-autoscaler-x.y.z` tag on `HEAD` and does not understand the candidate and official AKS tag scheme in this workflow.
 
