@@ -1,5 +1,5 @@
 # CodeQL analysis for Continuous SDL / S360 compliance.
-# Uses build-mode: none (buildless Go extraction) because this is a large,
+# Uses build-mode: autobuild (buildless Go extraction) because this is a large,
 # multi-module repository where autobuild is unreliable.
 name: "CodeQL"
 
@@ -36,7 +36,7 @@ jobs:
         uses: github/codeql-action/init@4dd16135b69a43b6c8efb853346f8437d92d3c93 # v3.26.6
         with:
           languages: ${{ matrix.language }}
-          build-mode: none
+          build-mode: autobuild
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@4dd16135b69a43b6c8efb853346f8437d92d3c93 # v3.26.6
