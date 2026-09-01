@@ -21,7 +21,11 @@ set -o pipefail
 echo "verify-kubelint"
 
 echo "installing dependencies"
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+# Pinned to match the golangci-lint version in .custom-gcl.yml, which is what the
+# custom kube-api-linter binary is actually built with. Using @latest here made the
+# build depend on whatever golangci-lint had most recently published, and broke CI
+# once a release started requiring a newer Go toolchain than this branch pins.
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0
 
 cd $(dirname "${BASH_SOURCE}")/..
 SCRIPT_ROOT="$PWD"
