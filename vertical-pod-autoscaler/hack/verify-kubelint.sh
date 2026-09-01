@@ -21,7 +21,14 @@ set -o pipefail
 echo "verify-kubelint"
 
 echo "installing dependencies"
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+# Pinned rather than @latest: the install tracked whatever golangci-lint had most
+# recently published, and v2.13.x now requires Go >= 1.26 while CI pins Go 1.25
+# with GOTOOLCHAIN=local, so the install started failing for every PR.
+#
+# v2.12.0 is the newest release that still supports Go 1.25. Do not move this
+# below v2.7.0: earlier releases pass "-c advice.detachedHead=false" to git clone
+# as a single argument, which newer git rejects when building the custom linter.
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.0
 
 cd $(dirname "${BASH_SOURCE}")/..
 SCRIPT_ROOT="$PWD"
