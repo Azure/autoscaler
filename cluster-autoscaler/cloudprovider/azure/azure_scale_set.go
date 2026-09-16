@@ -335,6 +335,16 @@ func (scaleSet *ScaleSet) setScaleSetSize(size int64, delta int) error {
 	// If after reallocating instances we still need more instances or we're just in Delete mode
 	// send a scale request
 	if requiredInstances > 0 {
+		if scaleSet.scaleDownPolicy == deallocate.Deallocate {
+			currentSize, getVMSSError := scaleSet.getCurSize()
+			if getVMSSError != nil {
+				return getVMSSError.error
+			}
+			if currentSize < 0 {
+				return fmt.Errorf("cannot increase scale set %s with invalid current size %d", scaleSet.Name, currentSize)
+			}
+			size = currentSize + int64(requiredInstances)
+		}
 		klog.V(3).Infof("Remaining unsatisfied count is %d. Attempting to increase scale set %q "+
 			"capacity", requiredInstances, scaleSet.Name)
 		err := scaleSet.createOrUpdateInstances(vmssInfo, size)

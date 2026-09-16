@@ -66,6 +66,161 @@ func newFakeDeallocatePoller(handler runtime.PollingHandler[armcompute.VirtualMa
 	return p
 }
 
+func TestScaleSetIncreaseSizePreservesDeallocatingCapacity(testingT *testing.T) {
+	testCases := []struct {
+		name               string
+		policy             deallocate.ScaleDownPolicy
+		deallocated        int
+		deallocating       int
+		failedStarts       int
+		metadataCapacity   int64
+		deltas             []int
+		expectedStarts     int
+		expectedCapacities []int64
+	}{
+		{
+			name:               "repeated scale ups while deallocation is pending",
+			policy:             deallocate.Deallocate,
+			deallocating:       5,
+			deltas:             []int{1, 1},
+			expectedCapacities: []int64{11, 12},
+		},
+		{
+			name:               "stale VMSS metadata does not override the size cache",
+			policy:             deallocate.Deallocate,
+			deallocating:       5,
+			metadataCapacity:   8,
+			deltas:             []int{1},
+			expectedCapacities: []int64{11},
+		},
+		{
+			name:               "partial reuse grows only remaining capacity",
+			policy:             deallocate.Deallocate,
+			deallocated:        2,
+			deallocating:       5,
+			deltas:             []int{3},
+			expectedStarts:     2,
+			expectedCapacities: []int64{11},
+		},
+		{
+			name:           "warm instances satisfy repeated requests without a PUT",
+			policy:         deallocate.Deallocate,
+			deallocated:    2,
+			deallocating:   5,
+			deltas:         []int{1, 1},
+			expectedStarts: 2,
+		},
+		{
+			name:               "one failed start leaves one new instance required",
+			policy:             deallocate.Deallocate,
+			deallocated:        2,
+			deallocating:       5,
+			failedStarts:       1,
+			deltas:             []int{2},
+			expectedStarts:     2,
+			expectedCapacities: []int64{11},
+		},
+		{
+			name:               "failed starts preserve existing deallocated VMs",
+			policy:             deallocate.Deallocate,
+			deallocated:        2,
+			deallocating:       5,
+			failedStarts:       2,
+			deltas:             []int{2},
+			expectedStarts:     2,
+			expectedCapacities: []int64{12},
+		},
+		{
+			name:               "deallocate mode without excluded instances",
+			policy:             deallocate.Deallocate,
+			deltas:             []int{2},
+			expectedCapacities: []int64{12},
+		},
+		{
+			name:               "delete mode keeps absolute target behavior",
+			policy:             deallocate.Delete,
+			deltas:             []int{2},
+			expectedCapacities: []int64{12},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testingT.Run(testCase.name, func(testingT *testing.T) {
+			ctrl := gomock.NewController(testingT)
+			manager := newTestAzureManager(testingT)
+			scaleSet := newTestScaleSet(manager, testASG)
+			assert.True(testingT, manager.RegisterNodeGroup(scaleSet))
+			manager.explicitlyConfigured[testASG] = true
+			if !assert.NoError(testingT, manager.forceRefresh()) {
+				return
+			}
+			manager.azureCache.getScaleSets()[testASG].SKU.Capacity = ptr.To[int64](10)
+			if testCase.metadataCapacity != 0 {
+				manager.azureCache.getScaleSets()[testASG].SKU.Capacity = ptr.To(testCase.metadataCapacity)
+			}
+			scaleSet.scaleDownPolicy = testCase.policy
+			scaleSet.maxSize = 60
+			scaleSet.curSize = 10
+			scaleSet.lastSizeRefresh = time.Now()
+			scaleSet.sizeRefreshPeriod = time.Hour
+			scaleSet.lastInstanceRefresh = time.Now()
+			scaleSet.instancesRefreshPeriod = time.Hour
+			scaleSet.instanceCache = nil
+			var originalIDs []string
+			for instanceIndex := 0; instanceIndex < 10; instanceIndex++ {
+				state := cloudprovider.InstanceRunning
+				if instanceIndex < testCase.deallocated {
+					state = cloudprovider.InstanceDeallocated
+				} else if instanceIndex < testCase.deallocated+testCase.deallocating {
+					state = cloudprovider.InstanceDeallocating
+				}
+				instanceID := azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, instanceIndex)
+				originalIDs = append(originalIDs, instanceID)
+				scaleSet.instanceCache = append(scaleSet.instanceCache, cloudprovider.Instance{
+					Id:     instanceID,
+					Status: &cloudprovider.InstanceStatus{State: state},
+				})
+			}
+
+			var requestedCapacities []int64
+			startAttempts := 0
+			mockClient := NewMockVMSSDeleteClient(ctrl)
+			mockClient.EXPECT().BeginStart(gomock.Any(), manager.config.ResourceGroup, testASG, gomock.Any()).
+				DoAndReturn(func(ctx context.Context, resourceGroup, name string, options *armcompute.VirtualMachineScaleSetsClientBeginStartOptions) (*runtime.Poller[armcompute.VirtualMachineScaleSetsClientStartResponse], error) {
+					startAttempts++
+					if startAttempts <= testCase.failedStarts {
+						return nil, fmt.Errorf("start request failed")
+					}
+					return nil, nil
+				}).Times(testCase.expectedStarts)
+			mockClient.EXPECT().BeginCreateOrUpdate(gomock.Any(), manager.config.ResourceGroup, testASG, gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, resourceGroup, name string, parameters armcompute.VirtualMachineScaleSet, options *armcompute.VirtualMachineScaleSetsClientBeginCreateOrUpdateOptions) (*runtime.Poller[armcompute.VirtualMachineScaleSetsClientCreateOrUpdateResponse], error) {
+					requestedCapacities = append(requestedCapacities, *parameters.SKU.Capacity)
+					return nil, nil
+				}).Times(len(testCase.expectedCapacities))
+			manager.azClient.vmssClientForDelete = mockClient
+
+			expectedTarget := 10 - testCase.deallocated - testCase.deallocating
+			targetSize, err := scaleSet.TargetSize()
+			assert.NoError(testingT, err)
+			assert.Equal(testingT, expectedTarget, targetSize)
+			for _, delta := range testCase.deltas {
+				assert.NoError(testingT, scaleSet.IncreaseSize(delta))
+				expectedTarget += delta
+				targetSize, err = scaleSet.TargetSize()
+				assert.NoError(testingT, err)
+				assert.Equal(testingT, expectedTarget, targetSize)
+			}
+			assert.Equal(testingT, testCase.expectedCapacities, requestedCapacities)
+			var retainedIDs []string
+			for _, instance := range scaleSet.instanceCache {
+				retainedIDs = append(retainedIDs, instance.Id)
+			}
+			assert.Equal(testingT, originalIDs, retainedIDs)
+		})
+	}
+}
+
 func TestDeallocateNodes(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
