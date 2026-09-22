@@ -1149,6 +1149,8 @@ func (csr *ClusterStateRegistry) GetUpcomingNodes() (upcomingCounts map[string]i
 
 		// Deallocate-specific calculation
 		if ok && policyNg.ScaleDownPolicy() == deallocate.Deallocate {
+			// TODO: Integrate deallocated nodes with Readiness.Suspended once core has a target-accounting contract.
+			// Azure TargetSize excludes intentionally inactive capacity, so Suspended must not be subtracted here today.
 			// newNodes are the upcoming nodes. This is the TargetSize (goal state of the nodegroup) subtracted from (the current ready nodes + (nodes transitioning from deallocated state to running))+ unregistered + still starting nodes)
 			newNodes = ar.CurrentTarget - (len(readiness.Ready) + (len(readiness.Unready) - len(readiness.Deallocated)) + len(readiness.LongUnregistered))
 		}
