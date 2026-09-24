@@ -17,12 +17,15 @@ limitations under the License.
 package azure
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
+	autorestazure "github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
@@ -32,7 +35,185 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmclient/mockvmclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssclient/mockvmssclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmssvmclient/mockvmssvmclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
+
+func TestScaleSetIncreaseSizePreservesDeallocatingCapacity(testingT *testing.T) {
+	testCases := []struct {
+		name               string
+		policy             deallocate.ScaleDownPolicy
+		deallocated        int
+		deallocating       int
+		failedStarts       int
+		metadataCapacity   int64
+		deltas             []int
+		expectedStarts     int
+		expectedCapacities []int64
+	}{
+		{
+			name:               "repeated scale ups while deallocation is pending",
+			policy:             deallocate.Deallocate,
+			deallocating:       5,
+			deltas:             []int{1, 1},
+			expectedCapacities: []int64{11, 12},
+		},
+		{
+			name:               "stale VMSS metadata does not override the size cache",
+			policy:             deallocate.Deallocate,
+			deallocating:       5,
+			metadataCapacity:   8,
+			deltas:             []int{1},
+			expectedCapacities: []int64{11},
+		},
+		{
+			name:               "partial reuse grows only remaining capacity",
+			policy:             deallocate.Deallocate,
+			deallocated:        2,
+			deallocating:       5,
+			deltas:             []int{3},
+			expectedStarts:     2,
+			expectedCapacities: []int64{11},
+		},
+		{
+			name:           "warm instances satisfy repeated requests without a PUT",
+			policy:         deallocate.Deallocate,
+			deallocated:    2,
+			deallocating:   5,
+			deltas:         []int{1, 1},
+			expectedStarts: 2,
+		},
+		{
+			name:               "one failed start leaves one new instance required",
+			policy:             deallocate.Deallocate,
+			deallocated:        2,
+			deallocating:       5,
+			failedStarts:       1,
+			deltas:             []int{2},
+			expectedStarts:     2,
+			expectedCapacities: []int64{11},
+		},
+		{
+			name:               "failed starts preserve existing deallocated VMs",
+			policy:             deallocate.Deallocate,
+			deallocated:        2,
+			deallocating:       5,
+			failedStarts:       2,
+			deltas:             []int{2},
+			expectedStarts:     2,
+			expectedCapacities: []int64{12},
+		},
+		{
+			name:               "deallocate mode without excluded instances",
+			policy:             deallocate.Deallocate,
+			deltas:             []int{2},
+			expectedCapacities: []int64{12},
+		},
+		{
+			name:               "delete mode keeps absolute target behavior",
+			policy:             deallocate.Delete,
+			deltas:             []int{2},
+			expectedCapacities: []int64{12},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testingT.Run(testCase.name, func(testingT *testing.T) {
+			ctrl := gomock.NewController(testingT)
+			manager := newTestAzureManager(testingT)
+			scaleSet := newTestScaleSet(manager, testASG)
+			assert.True(testingT, manager.RegisterNodeGroup(scaleSet))
+			manager.explicitlyConfigured[testASG] = true
+			if !assert.NoError(testingT, manager.forceRefresh()) {
+				return
+			}
+			manager.azureCache.getScaleSets()[testASG].Sku.Capacity = to.Int64Ptr(10)
+			if testCase.metadataCapacity != 0 {
+				manager.azureCache.getScaleSets()[testASG].Sku.Capacity = to.Int64Ptr(testCase.metadataCapacity)
+			}
+			scaleSet.scaleDownPolicy = testCase.policy
+			scaleSet.maxSize = 60
+			scaleSet.curSize = 10
+			scaleSet.lastSizeRefresh = time.Now()
+			scaleSet.sizeRefreshPeriod = time.Hour
+			scaleSet.lastInstanceRefresh = time.Now()
+			scaleSet.instancesRefreshPeriod = time.Hour
+			scaleSet.instanceCache = nil
+			var originalIDs []string
+			for instanceIndex := 0; instanceIndex < 10; instanceIndex++ {
+				state := cloudprovider.InstanceRunning
+				if instanceIndex < testCase.deallocated {
+					state = cloudprovider.InstanceDeallocated
+				} else if instanceIndex < testCase.deallocated+testCase.deallocating {
+					state = cloudprovider.InstanceDeallocating
+				}
+				instanceID := azurePrefix + fmt.Sprintf(fakeVirtualMachineScaleSetVMID, instanceIndex)
+				originalIDs = append(originalIDs, instanceID)
+				scaleSet.instanceCache = append(scaleSet.instanceCache, cloudprovider.Instance{
+					Id:     instanceID,
+					Status: &cloudprovider.InstanceStatus{State: state},
+				})
+			}
+
+			var requestedCapacities []int64
+			startAttempts := 0
+			var polls sync.WaitGroup
+			// Keep asynchronous operations pending while checking successive requests.
+			// Completing a legacy capacity update invalidates the instance cache.
+			completeOperations := make(chan struct{})
+			defer func() {
+				close(completeOperations)
+				polls.Wait()
+			}()
+			mockClient := mockvmssclient.NewMockInterface(ctrl)
+			mockClient.EXPECT().StartInstancesAsync(gomock.Any(), manager.config.ResourceGroup, testASG, gomock.Any()).
+				DoAndReturn(func(ctx context.Context, resourceGroup, name string, parameters compute.VirtualMachineScaleSetVMInstanceRequiredIDs) (*autorestazure.Future, *retry.Error) {
+					startAttempts++
+					if startAttempts <= testCase.failedStarts {
+						return nil, &retry.Error{RawError: fmt.Errorf("start request failed")}
+					}
+					polls.Add(1)
+					return nil, nil
+				}).Times(testCase.expectedStarts)
+			mockClient.EXPECT().WaitForStartInstancesResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).
+				DoAndReturn(func(context.Context, *autorestazure.Future, string) (*http.Response, error) {
+					defer polls.Done()
+					<-completeOperations
+					return &http.Response{StatusCode: http.StatusOK}, nil
+				}).Times(testCase.expectedStarts - testCase.failedStarts)
+			mockClient.EXPECT().CreateOrUpdateAsync(gomock.Any(), manager.config.ResourceGroup, testASG, gomock.Any()).
+				DoAndReturn(func(ctx context.Context, resourceGroup, name string, parameters compute.VirtualMachineScaleSet) (*autorestazure.Future, *retry.Error) {
+					requestedCapacities = append(requestedCapacities, *parameters.Sku.Capacity)
+					polls.Add(1)
+					return &autorestazure.Future{}, nil
+				}).Times(len(testCase.expectedCapacities))
+			mockClient.EXPECT().WaitForCreateOrUpdateResult(gomock.Any(), gomock.Any(), manager.config.ResourceGroup).
+				DoAndReturn(func(context.Context, *autorestazure.Future, string) (*http.Response, error) {
+					defer polls.Done()
+					<-completeOperations
+					return &http.Response{StatusCode: http.StatusOK}, nil
+				}).Times(len(testCase.expectedCapacities))
+			manager.azClient.virtualMachineScaleSetsClient = mockClient
+
+			expectedTarget := 10 - testCase.deallocated - testCase.deallocating
+			targetSize, err := scaleSet.TargetSize()
+			assert.NoError(testingT, err)
+			assert.Equal(testingT, expectedTarget, targetSize)
+			for _, delta := range testCase.deltas {
+				assert.NoError(testingT, scaleSet.IncreaseSize(delta))
+				expectedTarget += delta
+				targetSize, err = scaleSet.TargetSize()
+				assert.NoError(testingT, err)
+				assert.Equal(testingT, expectedTarget, targetSize)
+			}
+			assert.Equal(testingT, testCase.expectedCapacities, requestedCapacities)
+			var retainedIDs []string
+			for _, instance := range scaleSet.instanceCache {
+				retainedIDs = append(retainedIDs, instance.Id)
+			}
+			assert.Equal(testingT, originalIDs, retainedIDs)
+		})
+	}
+}
 
 func TestDeallocateNodes(t *testing.T) {
 	ctrl := gomock.NewController(t)
