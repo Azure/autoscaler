@@ -99,6 +99,10 @@ git switch -c <topic-branch> cluster-autoscaler-release-1.36.0-aks
 
 5. Cherry-pick the main AKS fork delta commit for that line on the working branch.
 6. Cherry-pick any additional approved AKS fork commits after the main fork delta commit on the working branch.
+  - Use `git cherry-pick -x <source-sha>` for each source commit, in order.
+  - One source commit must produce one working-branch commit. Preserve the source commit subject exactly.
+  - Do not use `--no-commit` to combine source commits, reconstruct the final tree, squash commits locally, or replace the source commits with a synthetic replay commit.
+  - A conflicted cherry-pick may have a different resulting SHA, but it must retain the source subject and `(cherry picked from commit <source-sha>)` trailer.
 7. If any cherry-pick produces a conflict, **stop and present the conflict to the requestor** before resolving it. Show:
    - the file and the two competing changes
    - what each side is doing and why they conflict
@@ -144,6 +148,12 @@ git switch -c <topic-branch> cluster-autoscaler-release-1.35.2-aks
    - main AKS fork delta commit
    - additional AKS fork commits already approved for that line
   - any new small AKS-only fixes approved for this patch version line
+  Replay means direct, one-to-one cherry-picks:
+  - Use `git cherry-pick -x <source-sha>` for each existing source commit, in order.
+  - One source commit must produce one working-branch commit. Preserve the source commit subject exactly.
+  - Do not use `--no-commit` to combine source commits, reconstruct the final tree, squash commits locally, or replace the source commits with a synthetic replay commit.
+  - A conflicted cherry-pick may have a different resulting SHA, but it must retain the source subject and `(cherry picked from commit <source-sha>)` trailer.
+  - Create a normal new commit only for a genuinely new change that has no source commit.
 5. If any cherry-pick produces a conflict, **stop and present the conflict to the requestor** before resolving it. Show:
    - the file and the two competing changes
    - what each side is doing and why they conflict
@@ -365,6 +375,9 @@ For the review pass, use the `verify-azure-ca-release` skill so reviewers can ch
 ## Commit Hygiene
 
 - Use `git cherry-pick -x` for every backport.
+- Preserve source commit boundaries and subjects: one source commit must produce one working-branch commit with the source subject and `-x` trailer.
+- Never synthesize a replacement commit from multiple source commits, even when the final tree would be equivalent.
+- Squash-merge applies only when GitHub merges the completed PR. Do not squash or rewrite the working-branch cherry-picks before review.
 - Keep release branches linear.
 - Do not merge `master-azure` into release branches.
 - Document every resolved conflict in the PR description or in the commit that resolved it. Include the affected files, the chosen resolution, and why it is correct for that release line.

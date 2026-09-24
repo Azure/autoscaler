@@ -112,6 +112,8 @@ Check that:
 - the PR contains only the intended AKS commits
 - there are no merge commits from `master-azure`
 - the commit list matches the PR description
+- every replayed source commit maps one-to-one to a working-branch commit in the same order
+- every replayed working-branch commit preserves the source commit subject exactly
 - any non-obvious extra commit is explained
 
 After merge, verify the PR was merged using squash-merge:
@@ -128,9 +130,11 @@ Fail if the PR was merged with a regular merge commit (individual commits plus a
 
 Fail if the PR drags in unrelated commits, broad sync noise, or merge commits that hide provenance.
 
+Fail if source commits were combined with `--no-commit`, reconstructed from a final tree, locally squashed, or replaced by a synthetic replay commit. GitHub squash-merge applies only after the working-branch commits have been reviewed.
+
 ### 5. Verify Cherry-Pick Provenance
 
-For every replayed commit, prefer `git cherry-pick -x` so the commit message records the source SHA.
+For every replayed commit, require a direct `git cherry-pick -x` so the commit message records the source SHA while preserving the source commit subject and boundary.
 
 Check the commit bodies for provenance lines such as:
 
@@ -138,9 +142,9 @@ Check the commit bodies for provenance lines such as:
 (cherry picked from commit <sha>)
 ```
 
-If a commit does not use `-x`, require the PR description to explain its origin.
+PR-description provenance is supplemental evidence; it is not a substitute for the `-x` trailer on a replayed commit. A genuinely new change with no source commit does not require an `-x` trailer, but its origin and purpose must be clear.
 
-Fail if the reviewer cannot map a release-branch commit back to its source.
+Fail if a replayed commit lacks its source subject or `-x` trailer, if multiple source commits map to one working-branch commit, or if the reviewer cannot map each working-branch commit back to exactly one source commit.
 
 ### 6. Verify Conflict Documentation
 
