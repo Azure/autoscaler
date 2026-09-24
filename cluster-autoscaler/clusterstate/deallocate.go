@@ -22,6 +22,17 @@ import (
 	klog "k8s.io/klog/v2"
 )
 
+func calculateUpcomingNodesInNodeGroupByScaleDownPolicy(nodeGroup cloudprovider.NodeGroup, readiness Readiness, acceptable AcceptableRange) int {
+	policyNodeGroup, ok := nodeGroup.(deallocate.PolicyNodeGroup)
+	if !ok || policyNodeGroup.ScaleDownPolicy() != deallocate.Deallocate {
+		return calculateUpcomingNodesInNodeGroup(readiness, acceptable)
+	}
+
+	// Azure TargetSize excludes intentionally inactive capacity, so deallocated nodes
+	// transitioning to running must not be counted as already satisfying the target.
+	return acceptable.CurrentTarget - (len(readiness.Ready) + (len(readiness.Unready) - len(readiness.Deallocated)) + len(readiness.LongUnregistered))
+}
+
 func (csr *ClusterStateRegistry) calcDeallocationNodes(delta int, totalUnready []string) int {
 	if isAnyNodeGroupInDeallocationMode(csr.cloudProvider.NodeGroups()) {
 		totalDeallocated := csr.totalReadiness.Deallocated

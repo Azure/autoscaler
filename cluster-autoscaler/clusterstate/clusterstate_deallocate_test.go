@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	mockprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/mocks"
 	testprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/test"
 	"k8s.io/autoscaler/cluster-autoscaler/clusterstate/utils"
@@ -35,6 +36,41 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	kube_record "k8s.io/client-go/tools/record"
 )
+
+type deallocatePolicyNodeGroup struct {
+	cloudprovider.NodeGroup
+}
+
+func (ng *deallocatePolicyNodeGroup) ScaleDownPolicy() deallocate.ScaleDownPolicy {
+	return deallocate.Deallocate
+}
+
+func TestUpcomingNodesAccountForDeallocatedNodes(t *testing.T) {
+	const nodeGroupID = "deallocate-pool"
+
+	provider := testprovider.NewTestCloudProviderBuilder().Build()
+	mockedNodeGroup := &mockprovider.NodeGroup{}
+	mockedNodeGroup.On("Id").Return(nodeGroupID)
+	nodeGroup := &deallocatePolicyNodeGroup{NodeGroup: mockedNodeGroup}
+	provider.InsertNodeGroup(nodeGroup)
+
+	fakeLogRecorder, _ := utils.NewStatusMapRecorder(&fake.Clientset{}, "kube-system", kube_record.NewFakeRecorder(5), false, "my-cool-configmap")
+	clusterstate := NewClusterStateRegistry(provider, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{}), &emptyTemplateNodeInfoRegistry{})
+	clusterstate.acceptableRanges[nodeGroupID] = AcceptableRange{CurrentTarget: 2}
+	clusterstate.perNodeGroupReadiness[nodeGroupID] = Readiness{
+		Ready:       []string{"ready"},
+		Unready:     []string{"starting-deallocated"},
+		Deallocated: []string{"starting-deallocated"},
+	}
+	clusterstate.scaleUpRequests[nodeGroupID] = &ScaleUpRequest{NodeGroup: nodeGroup, Increase: 1}
+
+	upcoming, ok := clusterstate.getUpcomingNodesInNodeGroup(nodeGroupID)
+	assert.True(t, ok)
+	assert.Equal(t, 1, upcoming)
+
+	upcomingByNodeGroup, _ := clusterstate.GetUpcomingNodes()
+	assert.Equal(t, 1, upcomingByNodeGroup[nodeGroupID])
+}
 
 // TestHandleInstanceCreationErrorsStartDeallocatedFailed verifies that deallocated VMs
 // that fail to start trigger backoff with the expected Azure-specific error code.
