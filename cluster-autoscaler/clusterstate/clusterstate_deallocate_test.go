@@ -72,6 +72,14 @@ func TestUpcomingNodesAccountForDeallocatedNodes(t *testing.T) {
 	assert.Equal(t, 1, upcomingByNodeGroup[nodeGroupID])
 }
 
+func TestIsAnyNodeGroupInDeallocationModeSkipsNonPolicyNodeGroups(t *testing.T) {
+	nonPolicyNodeGroup := &mockprovider.NodeGroup{}
+	deallocateNodeGroup := &deallocatePolicyNodeGroup{NodeGroup: &mockprovider.NodeGroup{}}
+
+	assert.True(t, isAnyNodeGroupInDeallocationMode([]cloudprovider.NodeGroup{nonPolicyNodeGroup, deallocateNodeGroup}))
+	assert.False(t, isAnyNodeGroupInDeallocationMode([]cloudprovider.NodeGroup{nonPolicyNodeGroup}))
+}
+
 // TestHandleInstanceCreationErrorsStartDeallocatedFailed verifies that deallocated VMs
 // that fail to start trigger backoff with the expected Azure-specific error code.
 func TestHandleInstanceCreationErrorsStartDeallocatedFailed(t *testing.T) {

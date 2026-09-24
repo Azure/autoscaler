@@ -58,7 +58,7 @@ func isAnyNodeGroupInDeallocationMode(ngs []cloudprovider.NodeGroup) bool {
 	for _, ng := range ngs {
 		policyNg, ok := ng.(deallocate.PolicyNodeGroup)
 		if !ok {
-			return false
+			continue
 		}
 		if policyNg.ScaleDownPolicy() == deallocate.Deallocate {
 			return true
