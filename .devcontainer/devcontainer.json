@@ -1,32 +1,52 @@
 {
-  "name": "Kubernetes Autoscaler Development",
-  "image": "mcr.microsoft.com/devcontainers/go:1.26",
+	"name": "Azure CAS Dev",
+	"image": "mcr.microsoft.com/devcontainers/go:1.26",
+	"runArgs": ["--cap-add=SYS_PTRACE", "--security-opt", "seccomp=unconfined"],
 
-  "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "dockerDashComposeVersion": "v2",
-      "moby": false
-    },
-    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
-      "minikube": "latest"
-    },
-    "ghcr.io/devcontainers/features/github-cli:1": {}
-  },
+	"features": {
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+		"ghcr.io/devcontainers/features/azure-cli:1": {},
+		"ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+			"helm": "latest",
+			"minikube": "none"
+		},
+		"ghcr.io/devcontainers/features/github-cli:1": {},
+		"ghcr.io/rio/features/skaffold:2": {}
+	},
 
-  "onCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends libseccomp-dev",
+	"onCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends libseccomp-dev",
 
-  "postCreateCommand": "cd cluster-autoscaler && go mod download && cd .. && cd vertical-pod-autoscaler && go mod download && cd .. && hack/install-verify-tools.sh && go install sigs.k8s.io/kind@latest",
+	"postCreateCommand": {
+		"download cluster-autoscaler modules": "cd cluster-autoscaler && go mod download",
+		"download vertical-pod-autoscaler modules": "cd vertical-pod-autoscaler && go mod download",
+		"install verify tools": "hack/install-verify-tools.sh",
+		"install kind": "go install sigs.k8s.io/kind@latest",
+		"install ko": "go install github.com/google/ko@latest",
+		"install yq": "go install github.com/mikefarah/yq/v4@latest",
+		"disable skaffold metrics": "skaffold config set --global collect-metrics false"
+	},
 
-  "customizations": {
-    "vscode": {
-      "extensions": [
-        "golang.go"
-      ],
-      "settings": {
-        "go.testFlags": ["-race", "-count=1"],
-        "go.lintTool": "golangci-lint",
-        "go.lintOnSave": "workspace"
-      }
-    }
-  }
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"golang.go",
+				"ms-kubernetes-tools.vscode-kubernetes-tools",
+				"ms-kubernetes-tools.vscode-aks-tools",
+				"ms-azuretools.vscode-bicep",
+				"GitHub.vscode-pull-request-github",
+				"GitHub.copilot-chat"
+			],
+			"settings": {
+				"go.toolsManagement.checkForUpdates": "local",
+				"go.useLanguageServer": true,
+				"go.gopath": "/go",
+				"go.testFlags": ["-race", "-count=1"],
+				"go.lintTool": "golangci-lint",
+				"go.lintOnSave": "workspace",
+				"chat.useAgentSkills": true
+			}
+		}
+	},
+
+	"remoteUser": "vscode"
 }

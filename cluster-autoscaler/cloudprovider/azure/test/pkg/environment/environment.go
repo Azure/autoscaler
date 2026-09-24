@@ -74,11 +74,23 @@ type Environment struct {
 
 // NewEnvironment creates a fully initialized Environment.
 func NewEnvironment(resourceGroup string, helm *HelmConfig) *Environment {
+	Expect(resourceGroup).NotTo(BeEmpty(), "resource-group flag is required")
+
+	subscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
+	Expect(subscriptionID).NotTo(BeEmpty(), "AZURE_SUBSCRIPTION_ID environment variable is required")
+
+	tenantID := os.Getenv("AZURE_TENANT_ID")
+	if helm.IsEnabled() {
+		Expect(tenantID).NotTo(BeEmpty(), "AZURE_TENANT_ID is required when Helm deployment is enabled")
+		Expect(helm.ClusterName).NotTo(BeEmpty(), "cluster-name flag is required when Helm deployment is enabled")
+		Expect(helm.ClientID).NotTo(BeEmpty(), "client-id flag is required when Helm deployment is enabled")
+	}
+
 	env := &Environment{
 		Ctx:            context.Background(),
 		ResourceGroup:  resourceGroup,
-		SubscriptionID: os.Getenv("AZURE_SUBSCRIPTION_ID"),
-		TenantID:       os.Getenv("AZURE_TENANT_ID"),
+		SubscriptionID: subscriptionID,
+		TenantID:       tenantID,
 		Helm:           helm,
 	}
 
@@ -192,17 +204,17 @@ func (env *Environment) AllVMSSStable(g Gomega) {
 
 	nodes := &corev1.NodeList{}
 	g.Expect(env.K8s.List(env.Ctx, nodes)).To(Succeed())
-	g.Expect(nodes.Items).To(SatisfyAll(
-		HaveLen(expectedNodes),
-		ContainElements(Satisfy(func(node corev1.Node) bool {
-			for _, cond := range node.Status.Conditions {
-				if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
-					return true
-				}
+	g.Expect(nodes.Items).To(HaveLen(expectedNodes))
+	for _, node := range nodes.Items {
+		ready := false
+		for _, cond := range node.Status.Conditions {
+			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+				ready = true
+				break
 			}
-			return false
-		})),
-	))
+		}
+		g.Expect(ready).To(BeTrue(), "node %s is not Ready", node.Name)
+	}
 }
 
 // --- K8s helpers ---

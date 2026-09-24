@@ -1754,7 +1754,11 @@ func TestHandleInstanceCreationErrors(t *testing.T) {
 	mockMetrics := &mockMetrics{}
 	mockMetrics.On("RegisterFailedScaleUp", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
 	mockMetrics.On("RegisterFailedNodeCreations", mock.Anything, mock.Anything).Return()
-	clusterstate := newTestClusterStateRegistry(provider, fakeLogRecorder, withMetrics(mockMetrics, provider))
+	nodeInfos := map[string]*framework.NodeInfo{
+		"ng1": framework.NewTestNodeInfo(node),
+	}
+	registry := newMockTemplateNodeInfoRegistry(nodeInfos)
+	clusterstate := NewNotifiedClusterStateRegistry(provider, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 2 * time.Minute}), registry, withMetrics(mockMetrics, provider))
 	clusterstate.RegisterScaleUp(mockedNodeGroup, 1, now)
 
 	// UpdateNodes will trigger handleInstanceCreationErrors
@@ -1762,6 +1766,13 @@ func TestHandleInstanceCreationErrors(t *testing.T) {
 	assert.NoError(t, err)
 	mockMetrics.AssertCalled(t, "RegisterFailedScaleUp", metrics.FailedScaleUpReason("RESOURCE_POOL_EXHAUSTED"), "", "", "")
 	mockMetrics.AssertCalled(t, "RegisterFailedNodeCreations", metrics.FailedScaleUpReason("RESOURCE_POOL_EXHAUSTED"), 2)
+
+	// Verify the node group is in backoff with the correct error code
+	safety := clusterstate.NodeGroupScaleUpSafety(mockedNodeGroup, now)
+	assert.False(t, safety.SafeToScale, "node group should not be safe to scale")
+	assert.True(t, safety.BackoffStatus.IsBackedOff, "node group should be backed off")
+	assert.Equal(t, "RESOURCE_POOL_EXHAUSTED", safety.BackoffStatus.ErrorInfo.ErrorCode)
+	assert.Equal(t, cloudprovider.OutOfResourcesErrorClass, safety.BackoffStatus.ErrorInfo.ErrorClass)
 }
 
 func TestFailedScaleUpWithDra(t *testing.T) {
