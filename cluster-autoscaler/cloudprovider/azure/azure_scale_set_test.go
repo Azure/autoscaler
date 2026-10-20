@@ -33,6 +33,7 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
+	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachineclient/mock_virtualmachineclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachinescalesetclient/mock_virtualmachinescalesetclient"
@@ -271,6 +272,39 @@ func TestScaleSetTargetSizeReturnsErrorForCachedNegativeSize(t *testing.T) {
 	assert.Equal(t, -1, size)
 }
 
+// TestScaleSetTargetSizeReturnsErrorForNegativeDeallocateAdjustedSize verifies the
+// deallocate-mode guard in getScaleSetSize: when the deallocated/deallocating count
+// (from the instance cache) exceeds the reported VMSS capacity — only possible when the
+// caches are inconsistent, e.g. instances removed out-of-band — the subtraction would go
+// negative, and we surface an error instead of publishing a negative target size.
+func TestScaleSetTargetSizeReturnsErrorForNegativeDeallocateAdjustedSize(t *testing.T) {
+	provider := newTestProvider(t)
+	err := provider.azureManager.forceRefresh()
+	assert.NoError(t, err)
+
+	scaleSet := newTestScaleSetDeallocateMode(provider.azureManager, testASG)
+	// Pin a valid reported capacity of 3 (avoid a live size refresh).
+	scaleSet.curSize = 3
+	scaleSet.lastSizeRefresh = time.Now()
+	scaleSet.sizeRefreshPeriod = time.Hour
+
+	// Seed the instance cache with more deallocated instances (5) than the reported
+	// capacity (3), simulating a stale cache after instances were removed out-of-band.
+	scaleSet.instanceCache = []cloudprovider.Instance{
+		{Id: "0", Status: &cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated}},
+		{Id: "1", Status: &cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated}},
+		{Id: "2", Status: &cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated}},
+		{Id: "3", Status: &cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated}},
+		{Id: "4", Status: &cloudprovider.InstanceStatus{State: cloudprovider.InstanceDeallocated}},
+	}
+	scaleSet.lastInstanceRefresh = time.Now()
+	scaleSet.instancesRefreshPeriod = time.Hour
+
+	size, err := scaleSet.TargetSize()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "deallocated/deallocating instances is negative")
+	assert.Equal(t, -1, size)
+}
 func TestScaleSetIncreaseSize(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -703,6 +737,53 @@ func TestScaleSetAtomicIncreaseSizePollerFailure(t *testing.T) {
 
 // TestIncreaseSizeOnVMProvisioningFailed has been tweeked only for Uniform Orchestration mode.
 // If ProvisioningState == failed and power state is not running, Status.State == InstanceCreating with errorInfo populated.
+func TestScaleSetAtomicIncreaseSizeDeallocateNotImplemented(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	expectedScaleSets := newTestVMSSList(3, testASG, "eastus", armcompute.OrchestrationModeUniform)
+	expectedVMSSVMs := newTestVMSSVMList(3)
+
+	provider := newTestProvider(t)
+
+	mockVMSSClient := mock_virtualmachinescalesetclient.NewMockInterface(ctrl)
+	mockVMSSClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return(expectedScaleSets, nil).AnyTimes()
+	provider.azureManager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+	// No BeginCreateOrUpdate call should be made for deallocate policy.
+	mockDeleteClient := NewMockVMSSDeleteClient(ctrl)
+	provider.azureManager.azClient.vmssClientForDelete = mockDeleteClient
+
+	mockVMClient := mock_virtualmachineclient.NewMockInterface(ctrl)
+	mockVMClient.EXPECT().List(gomock.Any(), provider.azureManager.config.ResourceGroup).Return([]*armcompute.VirtualMachine{}, nil).AnyTimes()
+	provider.azureManager.azClient.virtualMachinesClient = mockVMClient
+
+	mockVMSSVMClient := mock_virtualmachinescalesetvmclient.NewMockInterface(ctrl)
+	mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), provider.azureManager.config.ResourceGroup, testASG).Return(expectedVMSSVMs, nil).AnyTimes()
+	provider.azureManager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+	err := provider.azureManager.forceRefresh()
+	assert.NoError(t, err)
+
+	ss := &ScaleSet{
+		azureRef:        azureRef{Name: testASG},
+		manager:         provider.azureManager,
+		minSize:         1,
+		maxSize:         5,
+		scaleDownPolicy: deallocate.Deallocate,
+	}
+	registered := provider.azureManager.RegisterNodeGroup(ss)
+	assert.True(t, registered)
+
+	err = provider.NodeGroups()[0].AtomicIncreaseSize(2)
+	assert.Equal(t, cloudprovider.ErrNotImplemented, err)
+
+	// Target size should remain unchanged (3).
+	targetSize, err := provider.NodeGroups()[0].TargetSize()
+	assert.NoError(t, err)
+	assert.Equal(t, 3, targetSize)
+}
+
 func TestScaleSetIncreaseSizeOnVMProvisioningFailed(t *testing.T) {
 	testCases := map[string]struct {
 		expectInstanceRunning    bool
@@ -2581,6 +2662,70 @@ func TestScaleSetETagRetrySkippedWhenAlreadyAtTarget(t *testing.T) {
 	assert.Equal(t, 1, putCalls, "expected no second PUT when VMSS already at target")
 }
 
+// TestScaleSetETagRetryInvalidatesInstanceCache verifies that after an ETag precondition
+// refresh, the instance cache is invalidated so a stale deallocated/deallocating count is
+// not reused. In deallocate mode getScaleSetSize subtracts the deallocated instance count
+// (read from the instance cache) from the reported capacity; if a concurrent writer removed
+// instances out-of-band (the case ETag guards), the refreshed VMSS carries fresh capacity
+// but the instance cache would still hold the pre-change count, yielding an incorrect
+// (potentially negative) target size. The refresh must therefore mark the instance cache
+// stale so it is recomputed from fresh Azure state.
+func TestScaleSetETagRetryInvalidatesInstanceCache(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	manager := newTestAzureManager(t)
+	manager.config.EnableVMSSEtag = true
+
+	vmssName := "vmss-etag-dealloc-invalidate"
+	orchMode := armcompute.OrchestrationModeUniform
+
+	// CA's cached view: stale ETag, capacity 3.
+	manager.azureCache.setScaleSet(vmssName, &armcompute.VirtualMachineScaleSet{
+		Name:       ptr.To(vmssName),
+		SKU:        &armcompute.SKU{Capacity: ptr.To[int64](3)},
+		Properties: &armcompute.VirtualMachineScaleSetProperties{OrchestrationMode: &orchMode},
+		Etag:       ptr.To(`W/"stale"`),
+	})
+
+	// The refresh GET returns a fresh VMSS already at/above the desired target so the retry
+	// takes the skip path (GET only, no second PUT). The cache invalidation runs regardless.
+	mockVMSSClient := mock_virtualmachinescalesetclient.NewMockInterface(ctrl)
+	mockVMSSClient.EXPECT().Get(gomock.Any(), manager.config.ResourceGroup, vmssName, gomock.Any()).
+		Return(&armcompute.VirtualMachineScaleSet{
+			Name:       ptr.To(vmssName),
+			SKU:        &armcompute.SKU{Capacity: ptr.To[int64](5)},
+			Properties: &armcompute.VirtualMachineScaleSetProperties{OrchestrationMode: &orchMode},
+			Etag:       ptr.To(`W/"fresh"`),
+		}, nil).Times(1)
+	mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).
+		Return([]*armcompute.VirtualMachineScaleSet{}, nil).AnyTimes()
+	manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+	scaleSet := newTestScaleSetDeallocateMode(manager, vmssName)
+	scaleSet.instancesRefreshPeriod = 10 * time.Minute
+	// Mark the instance cache as freshly refreshed so we can observe the invalidation.
+	scaleSet.lastInstanceRefresh = time.Now()
+	assert.True(t, scaleSet.lastInstanceRefresh.Add(scaleSet.instancesRefreshPeriod).After(time.Now()),
+		"precondition: instance cache should start valid")
+
+	ctx, cancel := getContextWithTimeout(asyncContextTimeout)
+	defer cancel()
+
+	fresh, poller, err := scaleSet.retryCreateOrUpdateWithFreshETag(ctx, 4)
+	assert.NoError(t, err)
+	assert.Nil(t, poller, "already-at-target refresh should skip the retry PUT")
+	if assert.NotNil(t, fresh) && assert.NotNil(t, fresh.SKU) && assert.NotNil(t, fresh.SKU.Capacity) {
+		assert.Equal(t, int64(5), *fresh.SKU.Capacity)
+	}
+
+	// The instance cache must now be considered stale, forcing a fresh recompute of the
+	// deallocated/deallocating count on the next getScaleSetSize.
+	assert.False(t, scaleSet.lastInstanceRefresh.Add(scaleSet.instancesRefreshPeriod).After(time.Now()),
+		"ETag refresh should invalidate the instance cache")
+}
+
 // TestScaleSetETagReconcilesConcurrentWriter exercises the core scenario ETag mode is
 // meant to protect: another writer mutates the VMSS between CA's read and its write.
 // Using a mock that enforces optimistic concurrency like the real API, CA's first PUT
@@ -2995,4 +3140,93 @@ func TestETagConcurrentAccessNoDataRace(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// TestForceDeleteNodesDeallocateMode verifies that ForceDeleteNodes routes to
+// deallocateInstances (BeginDeallocate) for deallocate-mode groups, and to
+// DeleteInstances (BeginDeleteInstances) for delete-mode groups.
+func TestForceDeleteNodesDeallocateMode(t *testing.T) {
+	tests := map[string]struct {
+		scaleDownPolicy       deallocate.ScaleDownPolicy
+		expectDeallocate      bool
+		expectDeleteInstances bool
+	}{
+		"deallocate mode routes to deallocateInstances": {
+			scaleDownPolicy:       deallocate.Deallocate,
+			expectDeallocate:      true,
+			expectDeleteInstances: false,
+		},
+		"delete mode routes to DeleteInstances": {
+			scaleDownPolicy:       deallocate.Delete,
+			expectDeallocate:      false,
+			expectDeleteInstances: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			vmssName := "test-asg"
+			var vmssCapacity int64 = 3
+
+			expectedVMSSVMs := newTestVMSSVMList(3)
+			expectedVMs := newTestVMList(3)
+
+			manager := newTestAzureManager(t)
+			manager.config.EnableForceDelete = true
+			expectedScaleSets := newTestVMSSList(vmssCapacity, vmssName, "eastus", armcompute.OrchestrationModeUniform)
+
+			mockVMSSClient := mock_virtualmachinescalesetclient.NewMockInterface(ctrl)
+			mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).Times(2)
+			manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+			mockDeleteClient := NewMockVMSSDeleteClient(ctrl)
+			if tc.expectDeallocate {
+				mockDeleteClient.EXPECT().BeginDeallocate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).Times(1)
+			}
+			if tc.expectDeleteInstances {
+				mockDeleteClient.EXPECT().BeginDeleteInstances(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).Times(1)
+			}
+			manager.azClient.vmssClientForDelete = mockDeleteClient
+
+			mockVMSSVMClient := mock_virtualmachinescalesetvmclient.NewMockInterface(ctrl)
+			mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), manager.config.ResourceGroup, vmssName).Return(expectedVMSSVMs, nil).AnyTimes()
+			manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+			mockVMClient := mock_virtualmachineclient.NewMockInterface(ctrl)
+			mockVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedVMs, nil).AnyTimes()
+			manager.azClient.virtualMachinesClient = mockVMClient
+
+			err := manager.forceRefresh()
+			assert.NoError(t, err)
+
+			resourceLimiter := cloudprovider.NewResourceLimiter(
+				map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
+				map[string]int64{cloudprovider.ResourceNameCores: 10, cloudprovider.ResourceNameMemory: 100000000})
+			provider, err := BuildAzureCloudProvider(manager, resourceLimiter)
+			assert.NoError(t, err)
+
+			scaleSet := newTestScaleSet(manager, vmssName)
+			scaleSet.scaleDownPolicy = tc.scaleDownPolicy
+			registered := manager.RegisterNodeGroup(scaleSet)
+			manager.explicitlyConfigured[vmssName] = true
+			assert.True(t, registered)
+
+			err = manager.forceRefresh()
+			assert.NoError(t, err)
+
+			ss, ok := provider.NodeGroups()[0].(*ScaleSet)
+			assert.True(t, ok)
+			ss.scaleDownPolicy = tc.scaleDownPolicy
+
+			nodesToDelete := []*apiv1.Node{
+				newApiNode(armcompute.OrchestrationModeUniform, 0),
+			}
+
+			err = ss.ForceDeleteNodes(nodesToDelete)
+			assert.NoError(t, err)
+		})
+	}
 }

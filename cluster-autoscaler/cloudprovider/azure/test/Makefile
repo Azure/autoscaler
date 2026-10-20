@@ -64,12 +64,14 @@ help: ## Display help
 
 .PHONY: setup-cluster
 setup-cluster: ## Create AKS cluster + ACR + workload identity for e2e testing
+	@echo "-- creating cluster --"
 	cd $(DEV_DIR) && bash ./aks-dev-deploy.sh
 
 ##@ Build & Deploy
 
 .PHONY: deploy-local
 deploy-local: ## Build CAS and deploy to cluster via skaffold
+	@echo "-- deploying CAS to cluster --"
 	cd $(CAS_ROOT) && skaffold run --filename cloudprovider/azure/examples/dev/skaffold.yaml
 
 .PHONY: deploy-local-dev
@@ -80,6 +82,7 @@ deploy-local-dev: ## Build + deploy CAS in watch mode (auto-redeploy on changes)
 
 .PHONY: e2etests
 e2etests: ## Run e2e tests (CAS must already be deployed)
+	@echo "-- running e2e tests --"
 	go run github.com/onsi/ginkgo/v2/ginkgo \
 		--tags e2e \
 		-v --trace \
