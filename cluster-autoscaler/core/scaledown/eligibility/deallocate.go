@@ -45,7 +45,7 @@ func processNodeGroupDeallocate(context *context.AutoscalingContext, node *apiv1
 // they remain in NotReady state
 func shouldSkipDeletionWhenDeallocated(nodeGroup cloudprovider.NodeGroup, node *apiv1.Node) bool {
 	policyNg, ok := nodeGroup.(deallocate.PolicyNodeGroup)
-	if ok && policyNg.ScaleDownPolicy() != deallocate.Deallocate {
+	if !ok || policyNg.ScaleDownPolicy() != deallocate.Deallocate {
 		return false
 	}
 	ready, _, _ := kube_util.GetReadinessState(node)
