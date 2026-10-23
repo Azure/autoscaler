@@ -1153,21 +1153,33 @@ func (csr *ClusterStateRegistry) GetUpcomingNodes() (upcomingCounts map[string]i
 			// Negative value is unlikely but theoretically possible.
 			continue
 		}
-		// Don't count upcoming nodes for node groups that have upcoming nodes but no
-		// active scale-up request (the request was removed after instance creation
-		// failure or timeout) or are backed off. Otherwise, fake upcoming nodes
-		// injected into the cluster snapshot will make unschedulable pods appear
-		// schedulable, preventing ScaleUp from ever being called and considering
-		// alternative node groups.
-		if _, hasScaleUpRequest := csr.scaleUpRequests[id]; !hasScaleUpRequest {
-			klog.V(4).Infof("Skipping %d upcoming nodes for node group %s: no active scale-up request", newNodes, id)
+		// Upcoming nodes are split into two categories:
+		//  - backed: nodes that are known to exist, i.e. registered with k8s but not started yet (NotStarted), or
+		//    instances that came up on the cloud provider side without errors but haven't registered yet (Unregistered).
+		//  - unbacked: the remaining delta between the target size and the existing nodes, not backed by any instance.
+		// Backed nodes are always counted as upcoming. They are real nodes that are expected to become ready soon, and
+		// they need to be counted regardless of in-memory state (scale-up requests and backoff are lost on restart).
+		// Otherwise, a CA restart during node startup would trigger a duplicate scale-up, and expose NotStarted nodes
+		// to scale-down.
+		backedNodes := min(len(readiness.NotStarted)+len(readiness.Unregistered), newNodes)
+		upcoming := backedNodes
+		// Don't count the unbacked delta for node groups that have no active scale-up request (the request was removed
+		// after instance creation failure or timeout) or are backed off. Otherwise, fake upcoming nodes injected into
+		// the cluster snapshot will make unschedulable pods appear schedulable, preventing ScaleUp from ever being
+		// called and considering alternative node groups.
+		if unbackedNodes := newNodes - backedNodes; unbackedNodes > 0 {
+			if _, hasScaleUpRequest := csr.scaleUpRequests[id]; !hasScaleUpRequest {
+				klog.V(4).Infof("Skipping %d unbacked upcoming nodes (%d backed) for node group %s: no active scale-up request", unbackedNodes, backedNodes, id)
+			} else if backoffStatus := csr.BackoffStatusForNodeGroup(nodeGroup, time.Now()); backoffStatus.IsBackedOff {
+				klog.V(4).Infof("Skipping %d unbacked upcoming nodes (%d backed) for backed-off node group %s: %s", unbackedNodes, backedNodes, id, backoffStatus.ErrorInfo.ErrorMessage)
+			} else {
+				upcoming = newNodes
+			}
+		}
+		if upcoming <= 0 {
 			continue
 		}
-		if backoffStatus := csr.BackoffStatusForNodeGroup(nodeGroup, time.Now()); backoffStatus.IsBackedOff {
-			klog.V(4).Infof("Skipping %d upcoming nodes for backed-off node group %s: %s", newNodes, id, backoffStatus.ErrorInfo.ErrorMessage)
-			continue
-		}
-		upcomingCounts[id] = newNodes
+		upcomingCounts[id] = upcoming
 		// newNodes should include instances that have registered with k8s but aren't ready yet, instances that came up on the cloud provider side
 		// but haven't registered with k8s yet, and instances that haven't even come up on the cloud provider side yet (but are reflected in the target
 		// size). The first category is categorized as NotStarted in readiness, the other two aren't registered with k8s, so they shouldn't be
