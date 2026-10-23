@@ -72,6 +72,48 @@ func TestUpcomingNodesAccountForDeallocatedNodes(t *testing.T) {
 	assert.Equal(t, 1, upcomingByNodeGroup[nodeGroupID])
 }
 
+// TestGetUpcomingNodesDeallocateBackedVsUnbacked verifies that in deallocate mode, nodes that already exist and are
+// still starting (NotStarted) are counted as upcoming even without an in-memory scale-up request (e.g. after a CA
+// restart), while deallocated nodes that are being started remain part of the unbacked delta and are only counted
+// while a scale-up request is active.
+func TestGetUpcomingNodesDeallocateBackedVsUnbacked(t *testing.T) {
+	const nodeGroupID = "deallocate-pool"
+	testCases := []struct {
+		name           string
+		scaleUpRequest bool
+		wantUpcoming   int
+	}{
+		{name: "with active scale-up request", scaleUpRequest: true, wantUpcoming: 2},
+		{name: "without scale-up request (CA restart)", scaleUpRequest: false, wantUpcoming: 1},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := testprovider.NewTestCloudProviderBuilder().Build()
+			mockedNodeGroup := &mockprovider.NodeGroup{}
+			mockedNodeGroup.On("Id").Return(nodeGroupID)
+			nodeGroup := &deallocatePolicyNodeGroup{NodeGroup: mockedNodeGroup}
+			provider.InsertNodeGroup(nodeGroup)
+
+			fakeLogRecorder, _ := utils.NewStatusMapRecorder(&fake.Clientset{}, "kube-system", kube_record.NewFakeRecorder(5), false, "my-cool-configmap")
+			clusterstate := NewClusterStateRegistry(provider, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{}), &emptyTemplateNodeInfoRegistry{})
+			clusterstate.acceptableRanges[nodeGroupID] = AcceptableRange{CurrentTarget: 3}
+			clusterstate.perNodeGroupReadiness[nodeGroupID] = Readiness{
+				Ready:       []string{"ready"},
+				NotStarted:  []string{"not-started"},
+				Unready:     []string{"starting-deallocated"},
+				Deallocated: []string{"starting-deallocated"},
+			}
+			if tc.scaleUpRequest {
+				clusterstate.scaleUpRequests[nodeGroupID] = &ScaleUpRequest{NodeGroup: nodeGroup, Increase: 2}
+			}
+
+			upcomingByNodeGroup, registered := clusterstate.GetUpcomingNodes()
+			assert.Equal(t, tc.wantUpcoming, upcomingByNodeGroup[nodeGroupID])
+			assert.Equal(t, []string{"not-started"}, registered[nodeGroupID])
+		})
+	}
+}
+
 func TestIsAnyNodeGroupInDeallocationModeSkipsNonPolicyNodeGroups(t *testing.T) {
 	nonPolicyNodeGroup := &mockprovider.NodeGroup{}
 	deallocateNodeGroup := &deallocatePolicyNodeGroup{NodeGroup: &mockprovider.NodeGroup{}}
