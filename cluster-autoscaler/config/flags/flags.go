@@ -89,8 +89,9 @@ var (
 	scaleDownUtilizationThreshold = flag.Float64("scale-down-utilization-threshold", config.DefaultScaleDownUtilizationThreshold,
 		"The maximum value between the sum of cpu requests and sum of memory requests of all pods running on the node divided by node's corresponding allocatable resource, below which a node can be considered for scale down")
 	scaleDownGpuUtilizationThreshold = flag.Float64("scale-down-gpu-utilization-threshold", config.DefaultScaleDownGpuUtilizationThreshold,
-		"Sum of gpu requests of all pods running on the node divided by node's allocatable resource, below which a node can be considered for scale down."+
-			"Utilization calculation only cares about gpu resource for accelerator node. cpu and memory utilization will be ignored.")
+		"Maximum across resources representing the selected GPU family of the sum of pod requests divided by the node's allocatable resource, at or below which a node can be considered for scale down. "+
+			"NVIDIA whole-GPU, MIG, and time-sliced resources are evaluated together. "+
+			"CPU and memory utilization are ignored for GPU nodes.")
 	scaleDownNonEmptyCandidatesCount = flag.Int("scale-down-non-empty-candidates-count", 30,
 		"Maximum number of non empty nodes considered in one iteration as candidates for scale down with drain."+
 			"Lower value means better CA responsiveness but possible slower scale down latency."+
