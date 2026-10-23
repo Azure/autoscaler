@@ -1120,7 +1120,7 @@ The following startup parameters are supported for cluster autoscaler:
 | `scale-down-delay-after-failure` | How long after scale down failure that scale down evaluation resumes | 3m0s |
 | `scale-down-delay-type-local` | Should --scale-down-delay-after-* flags be applied locally per nodegroup or globally across all nodegroups |  |
 | `scale-down-enabled` | [Deprecated] Should CA scale down the cluster | true |
-| `scale-down-gpu-utilization-threshold` | Sum of gpu requests of all pods running on the node divided by node's allocatable resource, below which a node can be considered for scale down.Utilization calculation only cares about gpu resource for accelerator node. cpu and memory utilization will be ignored. | 0.5 |
+| `scale-down-gpu-utilization-threshold` | Maximum across resources representing the selected GPU family of the sum of pod requests divided by the node's allocatable resource, at or below which a node can be considered for scale down. NVIDIA whole-GPU, MIG, and time-sliced resources are evaluated together. CPU and memory utilization are ignored for GPU nodes. | 0.5 |
 | `scale-down-non-empty-candidates-count` | Maximum number of non empty nodes considered in one iteration as candidates for scale down with drain.Lower value means better CA responsiveness but possible slower scale down latency.Higher value can affect CA performance with big clusters (hundreds of nodes).Set to non positive value to turn this heuristic off - CA will not limit the number of nodes it considers. | 30 |
 | `scale-down-simulation-timeout` | How long should we run scale down simulation. | 30s |
 | `scale-down-unneeded-time` | How long a node should be unneeded before it is eligible for scale down | 10m0s |
