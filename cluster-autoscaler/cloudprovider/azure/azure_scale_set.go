@@ -623,6 +623,18 @@ func (scaleSet *ScaleSet) initCreateOrUpdate(ctx context.Context, vmssInfo *armc
 	scaleSet.sizeMutex.Lock()
 	defer scaleSet.sizeMutex.Unlock()
 
+	// curSize can lag the VMSS cache. A scale-up
+	// must not turn that stale target into an absolute capacity reduction.
+	// TODO: Test the deallocate scale-up path with failed and partial restarts
+	// before extending this guard to deallocate mode (active versus total capacity).
+	vmssSizeMutex.Lock()
+	capacity := *vmssInfo.SKU.Capacity
+	vmssSizeMutex.Unlock()
+	if scaleSet.scaleDownPolicy != deallocate.Deallocate && newSize < capacity {
+		scaleSet.invalidateForPreconditionFailure()
+		return nil, nil, fmt.Errorf("refusing scale-up of VMSS %s to %d below cached capacity %d", scaleSet.Name, newSize, capacity)
+	}
+
 	op := buildScaleSetCapacityUpdate(vmssInfo, newSize)
 
 	klog.V(3).Infof("Calling virtualMachineScaleSetsClient.BeginCreateOrUpdate(%s)", scaleSet.Name)
@@ -716,6 +728,16 @@ func (scaleSet *ScaleSet) createOrUpdateInstances(vmssInfo *armcompute.VirtualMa
 	// This preserves the existing behavior (before atomic scale up was added).
 	vmssSizeMutex.Lock()
 	previousSize := vmssInfo.SKU.Capacity
+	if scaleSet.scaleDownPolicy != deallocate.Deallocate && newSize < *previousSize {
+		capacity := *previousSize
+		vmssSizeMutex.Unlock()
+		// Check before the eager mutation hides the higher cached capacity.
+		// Release vmssSizeMutex before acquiring sizeMutex to preserve lock order.
+		scaleSet.sizeMutex.Lock()
+		scaleSet.invalidateForPreconditionFailure()
+		scaleSet.sizeMutex.Unlock()
+		return fmt.Errorf("refusing scale-up of VMSS %s to %d below cached capacity %d", scaleSet.Name, newSize, capacity)
+	}
 	vmssInfo.SKU.Capacity = &newSize
 	vmssSizeMutex.Unlock()
 	effectiveVMSS, poller, err := scaleSet.initCreateOrUpdate(ctx, vmssInfo, newSize)

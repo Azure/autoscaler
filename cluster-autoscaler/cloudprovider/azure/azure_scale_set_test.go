@@ -305,6 +305,50 @@ func TestScaleSetTargetSizeReturnsErrorForNegativeDeallocateAdjustedSize(t *test
 	assert.Contains(t, err.Error(), "deallocated/deallocating instances is negative")
 	assert.Equal(t, -1, size)
 }
+func TestScaleSetIncreaseSizeRejectsStaleTarget(t *testing.T) {
+	for _, atomic := range []bool{false, true} {
+		for _, enableETag := range []bool{false, true} {
+			t.Run(fmt.Sprintf("atomic=%t/etag=%t", atomic, enableETag), func(t *testing.T) {
+				ctrl := gomock.NewController(t)
+				manager := newTestAzureManager(t)
+				manager.config.EnableVMSSEtag = enableETag
+				manager.lastRefresh = time.Now()
+				vmss := newTestVMSSList(34, testASG, testLocation, armcompute.OrchestrationModeUniform)[0]
+				vmss.Etag = ptr.To(`W/"current"`)
+				manager.azureCache.setScaleSet(testASG, vmss)
+				// No PUT is allowed, even when the cached ETag is current.
+				manager.azClient.vmssClientForDelete = NewMockVMSSDeleteClient(ctrl)
+
+				scaleSet := newTestScaleSet(manager, testASG)
+				scaleSet.scaleDownPolicy = deallocate.Delete
+				scaleSet.maxSize = 80
+				scaleSet.curSize = 25
+				scaleSet.lastSizeRefresh = time.Now()
+				scaleSet.sizeRefreshPeriod = time.Hour
+				scaleSet.lastInstanceRefresh = time.Now()
+				scaleSet.instancesRefreshPeriod = time.Hour
+
+				var err error
+				if atomic {
+					err = scaleSet.AtomicIncreaseSize(1)
+				} else {
+					err = scaleSet.IncreaseSize(1)
+				}
+				assert.ErrorContains(t, err, "refusing scale-up of VMSS test-asg to 26 below cached capacity 34")
+				assert.Equal(t, int64(34), *vmss.SKU.Capacity)
+				assert.Equal(t, `W/"current"`, *vmss.Etag)
+				assert.False(t, scaleSet.lastSizeRefresh.Add(scaleSet.sizeRefreshPeriod).After(time.Now()))
+				assert.False(t, scaleSet.lastInstanceRefresh.Add(scaleSet.instancesRefreshPeriod).After(time.Now()))
+				assert.False(t, manager.lastRefresh.Add(manager.azureCache.refreshInterval).After(time.Now()))
+
+				size, err := scaleSet.TargetSize()
+				assert.NoError(t, err)
+				assert.Equal(t, 34, size, "the next size read must reconcile the stale target")
+			})
+		}
+	}
+}
+
 func TestScaleSetIncreaseSize(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
