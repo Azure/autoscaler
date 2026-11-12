@@ -1017,6 +1017,13 @@ func (scaleSet *ScaleSet) ForceDeleteNodes(nodes []*apiv1.Node) error {
 		refs = append(refs, ref)
 	}
 
+	// Distinguish between unregistered node deletion and normal node deletion
+	// In deallocation mode, unregistered nodes should still be deleted
+	if hasUnregisteredNodes {
+		klog.V(3).Infof("Removing unregisteredNodes: %v", refs)
+		return scaleSet.DeleteInstances(refs, true)
+	}
+
 	if scaleSet.scaleDownPolicy == deallocate.Deallocate {
 		return scaleSet.deallocateInstances(refs)
 	}
