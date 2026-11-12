@@ -591,3 +591,116 @@ func TestWaitForDeallocateInstances(t *testing.T) {
 		}
 	})
 }
+
+func TestForceDeleteNodesUnregisteredCleanup(t *testing.T) {
+	tests := map[string]struct {
+		scaleDownPolicy       deallocate.ScaleDownPolicy
+		fakeNodeReason        string
+		expectDeleteInstances bool
+	}{
+		"deallocate mode deletes unregistered nodes": {
+			scaleDownPolicy:       deallocate.Deallocate,
+			fakeNodeReason:        cloudprovider.FakeNodeUnregistered,
+			expectDeleteInstances: true,
+		},
+		"delete mode deletes unregistered nodes": {
+			scaleDownPolicy:       deallocate.Delete,
+			fakeNodeReason:        cloudprovider.FakeNodeUnregistered,
+			expectDeleteInstances: true,
+		},
+		"deallocate mode still deallocates create-error nodes": {
+			scaleDownPolicy: deallocate.Deallocate,
+			fakeNodeReason:  cloudprovider.FakeNodeCreateError,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			vmssName := "test-asg"
+			var vmssCapacity int64 = 3
+
+			expectedVMSSVMs := newTestVMSSVMList(3)
+			expectedVMs := newTestVMList(3)
+
+			manager := newTestAzureManager(t)
+			manager.config.EnableForceDelete = true
+			expectedScaleSets := newTestVMSSList(vmssCapacity, vmssName, "eastus", armcompute.OrchestrationModeUniform)
+
+			mockVMSSClient := mock_virtualmachinescalesetclient.NewMockInterface(ctrl)
+			mockVMSSClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedScaleSets, nil).Times(2)
+			manager.azClient.virtualMachineScaleSetsClient = mockVMSSClient
+
+			mockDeleteClient := NewMockVMSSDeleteClient(ctrl)
+			if tc.expectDeleteInstances {
+				mockDeleteClient.EXPECT().BeginDeleteInstances(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).Times(1)
+			} else {
+				mockDeleteClient.EXPECT().BeginDeallocate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).Times(1)
+			}
+			manager.azClient.vmssClientForDelete = mockDeleteClient
+
+			mockVMSSVMClient := mock_virtualmachinescalesetvmclient.NewMockInterface(ctrl)
+			mockVMSSVMClient.EXPECT().ListVMInstanceView(gomock.Any(), manager.config.ResourceGroup, vmssName).Return(expectedVMSSVMs, nil).AnyTimes()
+			manager.azClient.virtualMachineScaleSetVMsClient = mockVMSSVMClient
+
+			mockVMClient := mock_virtualmachineclient.NewMockInterface(ctrl)
+			mockVMClient.EXPECT().List(gomock.Any(), manager.config.ResourceGroup).Return(expectedVMs, nil).AnyTimes()
+			manager.azClient.virtualMachinesClient = mockVMClient
+
+			err := manager.forceRefresh()
+			assert.NoError(t, err)
+
+			resourceLimiter := cloudprovider.NewResourceLimiter(
+				map[string]int64{cloudprovider.ResourceNameCores: 1, cloudprovider.ResourceNameMemory: 10000000},
+				map[string]int64{cloudprovider.ResourceNameCores: 10, cloudprovider.ResourceNameMemory: 100000000})
+			provider, err := BuildAzureCloudProvider(manager, resourceLimiter)
+			assert.NoError(t, err)
+
+			scaleSet := newTestScaleSet(manager, vmssName)
+			scaleSet.scaleDownPolicy = tc.scaleDownPolicy
+			registered := manager.RegisterNodeGroup(scaleSet)
+			manager.explicitlyConfigured[vmssName] = true
+			assert.True(t, registered)
+
+			err = manager.forceRefresh()
+			assert.NoError(t, err)
+
+			ss, ok := provider.NodeGroups()[0].(*ScaleSet)
+			assert.True(t, ok)
+			ss.scaleDownPolicy = tc.scaleDownPolicy
+
+			node := newApiNode(armcompute.OrchestrationModeUniform, 0)
+			node.Annotations = map[string]string{
+				cloudprovider.FakeNodeReasonAnnotation: tc.fakeNodeReason,
+			}
+			nodesToDelete := []*apiv1.Node{node}
+
+			targetSize, err := ss.TargetSize()
+			assert.NoError(t, err)
+			assert.Equal(t, int(vmssCapacity), targetSize)
+
+			err = ss.ForceDeleteNodes(nodesToDelete)
+			assert.NoError(t, err)
+			assert.Equal(t, vmssCapacity, ss.curSize)
+
+			instance, found, err := ss.getInstanceByProviderID(node.Spec.ProviderID)
+			assert.NoError(t, err)
+			if assert.True(t, found) && assert.NotNil(t, instance.Status) {
+				expectedState := cloudprovider.InstanceDeallocating
+				if tc.expectDeleteInstances {
+					expectedState = cloudprovider.InstanceDeleting
+				}
+				assert.Equal(t, expectedState, instance.Status.State)
+			}
+
+			if tc.expectDeleteInstances {
+				// A later scan must not submit another delete while this instance is deleting.
+				err = ss.ForceDeleteNodes(nodesToDelete)
+				assert.NoError(t, err)
+				assert.Equal(t, vmssCapacity, ss.curSize)
+			}
+		})
+	}
+}
