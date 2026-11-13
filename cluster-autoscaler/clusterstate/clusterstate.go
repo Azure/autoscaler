@@ -538,7 +538,8 @@ func (csr *ClusterStateRegistry) getProvisionedAndTargetSizesForNodeGroup(nodeGr
 		}
 		return 0, target, true
 	}
-	provisioned = len(readiness.Registered) - len(readiness.NotStarted)
+	// The shutdown taint stays until the node is Ready, so a failed restart doesn't count as provisioned.
+	provisioned = len(readiness.Registered) - len(readiness.NotStarted) - len(readiness.Shutdown)
 
 	return provisioned, target, true
 }
@@ -646,6 +647,8 @@ type Readiness struct {
 	Unregistered []string
 	// Number of deallocated nodes that exist in K8s
 	Deallocated []string
+	// Names of deallocated nodes with the cloud provider shutdown taint.
+	Shutdown []string
 	// Time when the readiness was measured.
 	Time time.Time
 	// Names of nodes that are Unready due to missing resources.
@@ -686,6 +689,9 @@ func (csr *ClusterStateRegistry) updateReadinessStats(currentTime time.Time) {
 		} else if (nodeGroup != nil && ok && policyNg.ScaleDownPolicy() == deallocate.Deallocate) && (taints.HasShutdownTaint(node) || taints.HasUnreachableTaint(node)) {
 			// TODO: When removing Deallocate mode, remove this if-nest.
 			current.Deallocated = append(current.Deallocated, node.Name)
+			if taints.HasShutdownTaint(node) {
+				current.Shutdown = append(current.Shutdown, node.Name)
+			}
 			current.Unready = append(current.Unready, node.Name)
 		} else if nr.Ready {
 			current.Ready = append(current.Ready, node.Name)
