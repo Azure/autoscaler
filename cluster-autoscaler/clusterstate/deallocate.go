@@ -34,7 +34,9 @@ func calculateUpcomingNodesInNodeGroupByScaleDownPolicy(
 
 	// Azure TargetSize excludes intentionally inactive capacity, so deallocated nodes
 	// transitioning to running must not be counted as already satisfying the target.
-	activeUnreadyNodes := len(readiness.Unready) - len(readiness.Deallocated)
+	// The shutdown taint stays until the node is Ready, so a failed restart doesn't count.
+	// Nodes with only the unreachable taint may be running and still count.
+	activeUnreadyNodes := len(readiness.Unready) - len(readiness.Shutdown)
 	nodesSatisfyingTarget := len(readiness.Ready) + activeUnreadyNodes + len(readiness.LongUnregistered)
 	return acceptable.CurrentTarget - nodesSatisfyingTarget
 }

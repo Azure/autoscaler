@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	apiv1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider"
 	"k8s.io/autoscaler/cluster-autoscaler/cloudprovider/azure/deallocate"
 	mockprovider "k8s.io/autoscaler/cluster-autoscaler/cloudprovider/mocks"
@@ -61,6 +62,7 @@ func TestUpcomingNodesAccountForDeallocatedNodes(t *testing.T) {
 		Ready:       []string{"ready"},
 		Unready:     []string{"starting-deallocated"},
 		Deallocated: []string{"starting-deallocated"},
+		Shutdown:    []string{"starting-deallocated"},
 	}
 	clusterstate.scaleUpRequests[nodeGroupID] = &ScaleUpRequest{NodeGroup: nodeGroup, Increase: 1}
 
@@ -102,6 +104,7 @@ func TestGetUpcomingNodesDeallocateBackedVsUnbacked(t *testing.T) {
 				NotStarted:  []string{"not-started"},
 				Unready:     []string{"starting-deallocated"},
 				Deallocated: []string{"starting-deallocated"},
+				Shutdown:    []string{"starting-deallocated"},
 			}
 			if tc.scaleUpRequest {
 				clusterstate.scaleUpRequests[nodeGroupID] = &ScaleUpRequest{NodeGroup: nodeGroup, Increase: 2}
@@ -187,4 +190,89 @@ func TestHandleInstanceCreationErrorsStartDeallocatedFailed(t *testing.T) {
 	assert.True(t, safety.BackoffStatus.IsBackedOff, "node group should be backed off after start-deallocated-failed")
 	assert.Equal(t, "start-deallocated-failed", safety.BackoffStatus.ErrorInfo.ErrorCode)
 	assert.Equal(t, cloudprovider.OutOfResourcesErrorClass, safety.BackoffStatus.ErrorInfo.ErrorClass)
+}
+
+// TestScaleUpWithRetainedDeallocatedNode checks that a restarted node with the shutdown taint keeps
+// its scale-up open until a failed restart backs off the group, while a running node with only the
+// unreachable taint doesn't keep a scale-up open.
+func TestScaleUpWithRetainedDeallocatedNode(t *testing.T) {
+	const nodeGroupID = "deallocate-pool"
+	for _, tc := range []struct {
+		name      string
+		taintKeys []string
+		target    int
+	}{
+		{name: "restarted node fails", taintKeys: []string{"node.cloudprovider.kubernetes.io/shutdown", apiv1.TaintNodeUnreachable}},
+		{name: "unreachable running node", taintKeys: []string{apiv1.TaintNodeUnreachable}, target: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			target := tc.target
+			instances := []cloudprovider.Instance{{Id: "retained"}}
+			provider := testprovider.NewTestCloudProviderBuilder().Build()
+			mockedNodeGroup := &mockprovider.NodeGroup{}
+			mockedNodeGroup.On("Id").Return(nodeGroupID)
+			mockedNodeGroup.On("Autoprovisioned").Return(false)
+			mockedNodeGroup.On("TargetSize").Return(func() int { return target }, nil)
+			mockedNodeGroup.On("Nodes").Return(func() []cloudprovider.Instance {
+				return append([]cloudprovider.Instance(nil), instances...)
+			}, nil)
+			mockedNodeGroup.On("GetOptions", mock.Anything).Return(&config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}, nil)
+			mockedNodeGroup.On("DecreaseTargetSize", mock.Anything).Return(nil).Maybe()
+			retained := BuildTestNode("retained", 1000, 1000)
+			retained.CreationTimestamp = metav1.NewTime(now.Add(-96 * time.Hour))
+			SetNodeReadyState(retained, false, now.Add(-time.Hour))
+			for _, key := range tc.taintKeys {
+				retained.Spec.Taints = append(retained.Spec.Taints, apiv1.Taint{Key: key, Effect: apiv1.TaintEffectNoSchedule})
+			}
+			mockedNodeGroup.On("TemplateNodeInfo").Return(framework.NewTestNodeInfo(retained), nil)
+			nodeGroup := &deallocatePolicyNodeGroup{NodeGroup: mockedNodeGroup}
+			provider.InsertNodeGroup(nodeGroup)
+			provider.AddNode(nodeGroupID, retained)
+
+			fakeLogRecorder, _ := utils.NewStatusMapRecorder(&fake.Clientset{}, "kube-system", kube_record.NewFakeRecorder(10), false, "my-cool-configmap")
+			registry := newMockTemplateNodeInfoRegistry(map[string]*framework.NodeInfo{nodeGroupID: framework.NewTestNodeInfo(retained)})
+			clusterstate := NewNotifiedClusterStateRegistry(provider, fakeLogRecorder, newBackoff(), nodegroupconfig.NewDefaultNodeGroupConfigProcessor(config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute}), registry, WithConfig(ClusterStateRegistryConfig{OkTotalUnreadyCount: 1}))
+			assert.NoError(t, clusterstate.UpdateNodes([]*apiv1.Node{retained}, now))
+			assert.Equal(t, []string{"retained"}, clusterstate.GetClusterReadiness().Deallocated)
+
+			target++
+			clusterstate.RegisterScaleUp(nodeGroup, 1, now)
+			nodes := []*apiv1.Node{retained}
+			if tc.target == 0 {
+				assert.NoError(t, clusterstate.UpdateNodes(nodes, now.Add(time.Second)))
+				assert.True(t, clusterstate.IsNodeGroupScalingUp(nodeGroupID))
+				instances[0].Status = &cloudprovider.InstanceStatus{
+					State: cloudprovider.InstanceCreating,
+					ErrorInfo: &cloudprovider.InstanceErrorInfo{
+						ErrorClass:   cloudprovider.OutOfResourcesErrorClass,
+						ErrorCode:    "start-deallocated-failed",
+						ErrorMessage: "Failed to start deallocated VM",
+					},
+				}
+				later := now.Add(2 * time.Second)
+				assert.NoError(t, clusterstate.UpdateNodes(nodes, later))
+				status := clusterstate.BackoffStatusForNodeGroup(nodeGroup, later)
+				assert.True(t, status.IsBackedOff)
+				assert.Equal(t, "start-deallocated-failed", status.ErrorInfo.ErrorCode)
+				return
+			}
+
+			added := BuildTestNode("added", 1000, 1000)
+			added.CreationTimestamp = metav1.NewTime(now.Add(time.Minute))
+			SetNodeReadyState(added, true, now.Add(2*time.Minute))
+			provider.AddNode(nodeGroupID, added)
+			instances = append(instances, cloudprovider.Instance{Id: added.Spec.ProviderID})
+			nodes = append(nodes, added)
+			assert.NoError(t, clusterstate.UpdateNodes(nodes, now.Add(3*time.Minute)))
+			assert.False(t, clusterstate.IsNodeGroupScalingUp(nodeGroupID))
+			upcoming, _ := clusterstate.GetUpcomingNodes()
+			assert.Zero(t, upcoming[nodeGroupID])
+
+			later := now.Add(16 * time.Minute)
+			assert.NoError(t, clusterstate.UpdateNodes(nodes, later))
+			assert.False(t, clusterstate.BackoffStatusForNodeGroup(nodeGroup, later).IsBackedOff)
+			mockedNodeGroup.AssertNotCalled(t, "DecreaseTargetSize", mock.Anything)
+		})
+	}
 }
